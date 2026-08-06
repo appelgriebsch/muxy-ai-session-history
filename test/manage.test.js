@@ -125,7 +125,9 @@ describe("manage rename/delete", () => {
       { encoding: "utf8" },
     ).stdout.trim();
     assert.equal(title, "Copilot Fresh");
-    assert.match(readFileSync(join(state, "workspace.yaml"), "utf8"), /name: "Copilot Fresh"/);
+    const yamlMulti = readFileSync(join(state, "workspace.yaml"), "utf8");
+    assert.match(yamlMulti, /name: "Copilot Fresh"/);
+    assert.match(yamlMulti, /user_named:\s*true/);
     const meta = JSON.parse(readFileSync(join(state, "meta.json"), "utf8"));
     assert.equal(meta.title, "Copilot Fresh");
     assert.equal(meta.name, "Copilot Fresh");
@@ -203,6 +205,46 @@ describe("manage rename/delete", () => {
     const hit = rows.find((r) => r.id === SID);
     assert.ok(hit, "session should list after rename");
     assert.equal(hit.title, "Persisted New Title");
+  });
+
+
+  it("rename copilot fails loud when authoritative DB UPDATE fails", async () => {
+    const state = join(home, ".copilot", "session-state", SID);
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, "workspace.yaml"), `id: ${SID}\ncwd: /tmp/p\nname: OldYaml\n`);
+    writeFileSync(join(state, "meta.json"), JSON.stringify({ title: "OldMeta" }));
+    const storeDb = join(home, ".copilot", "session-store.db");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        storeDb,
+        `CREATE TABLE sessions (id TEXT PRIMARY KEY, summary TEXT);
+         INSERT INTO sessions VALUES ('${SID}', 'Old Summary');`,
+      ],
+      { encoding: "utf8" },
+    );
+    const base = createHostFs(realExec);
+    const fs = {
+      ...base,
+      sqliteExec(dbPath, sql) {
+        if (String(sql).includes("UPDATE sessions")) {
+          return Promise.reject(new Error("simulated UPDATE failure"));
+        }
+        return base.sqliteExec(dbPath, sql);
+      },
+    };
+    await assert.rejects(
+      () => renameSessionJs(fs, "copilot", SID, "Should Not Persist"),
+      /Could not rename Copilot session/i,
+    );
+    const summary = spawnSync(
+      "/usr/bin/sqlite3",
+      [storeDb, `SELECT summary FROM sessions WHERE id='${SID}'`],
+      { encoding: "utf8" },
+    ).stdout.trim();
+    assert.equal(summary, "Old Summary");
+    assert.match(readFileSync(join(state, "workspace.yaml"), "utf8"), /name: OldYaml/);
+    assert.equal(JSON.parse(readFileSync(join(state, "meta.json"), "utf8")).title, "OldMeta");
   });
 
   it("resolveTitleLikeColumn prefers title then summary then name", () => {

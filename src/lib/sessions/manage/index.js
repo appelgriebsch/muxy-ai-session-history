@@ -61,6 +61,7 @@ async function updateYamlName(fs, path, newTitle) {
   const keyRe = /^(\s*)name\s*:/;
   const userNamedRe = /^(\s*)user_named\s*:/;
   let replaced = false;
+  let sawUserNamed = false;
   const outLines = [];
   const safe = newTitle.replace(/\n/g, " ").replace(/"/g, '\\"');
   for (const line of lines) {
@@ -73,11 +74,13 @@ async function updateYamlName(fs, path, newTitle) {
     const um = userNamedRe.exec(line);
     if (um) {
       outLines.push(`${um[1]}user_named: true`);
+      sawUserNamed = true;
       continue;
     }
     outLines.push(line);
   }
   if (!replaced) outLines.push(`name: "${safe}"`);
+  if (!sawUserNamed) outLines.push(`user_named: true`);
   try {
     await toPromise(fs.writeAtomic(path, `${outLines.join("\n")}\n`));
     return true;
@@ -178,7 +181,7 @@ async function renameCopilot(fs, home, sessionId, newTitle) {
   /** If a sessions row exists with a title-like column, UPDATE must succeed. */
   let authoritativeDbUpdateFailed = false;
 
-  for (const dbName of ["data.db", "session-store.db"]) {
+  for (const dbName of ["session-store.db", "data.db"]) {
     const dbPath = joinPath(copilotHome, dbName);
     if (!(await toPromise(fs.isFile(dbPath)))) continue;
     try {
