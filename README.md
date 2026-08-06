@@ -16,7 +16,13 @@ Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cur
 
 ## Requirements
 
-- **Python 3** on PATH (`python3`) on the host where sessions live (local or SSH remote). The panel runs scanners via `muxy.exec(["python3", "-", …], { stdin })`.
+- **POSIX host tools** on the machine where sessions live (local or SSH remote), used via `muxy.exec` with fixed absolute paths:
+  - `/bin/cat`, `/bin/ls`, `/bin/mv`, `/bin/rm`, `/bin/mkdir`
+  - `/usr/bin/tee`, `/usr/bin/env`, `/usr/bin/printenv`, `/usr/bin/head`, `/usr/bin/stat`
+- **`/usr/bin/sqlite3`** for **Codex** and **Copilot** session stores (soft-fails those providers if missing; other CLIs still work)
+- macOS ships these with the base system / Xcode CLT; Linux remotes need equivalent coreutils + `sqlite3`
+
+`muxy.files` is worktree-sandboxed and **cannot** read `~/.grok`, `~/.claude`, etc. — home session stores are always reached through `commands:exec`.
 
 ## Install (dev)
 
@@ -32,7 +38,7 @@ Toggle the panel with the topbar clock icon or **⌘⇧H**.
 
 ## How history is resolved
 
-Sessions are **not** from `muxy.agents.list()` (live status only). The extension runs a Python scanner against each CLI’s on-disk store under your home directory, scoped to the active worktree path:
+Sessions are **not** from `muxy.agents.list()` (live status only). The extension runs **pure JavaScript** scanners over host tools against each CLI’s on-disk store under your home directory, scoped to the active worktree path:
 
 | CLI | Store (typical) | Resume command |
 | --- | --- | --- |
@@ -56,7 +62,7 @@ Only **installed** binaries appear as chips. Empty providers are omitted. If one
 
 ## Remote workspaces
 
-On SSH / remote Muxy workspaces, `muxy.exec` runs on the **remote** host. You see remote session stores, not Mac-local history from a local-only CLI.
+On SSH / remote Muxy workspaces, `muxy.exec` runs on the **remote** host. You see remote session stores, not Mac-local history from a local-only CLI. Remotes need the same host tools (and `sqlite3` for Codex/Copilot).
 
 ## Security
 
@@ -68,21 +74,22 @@ On SSH / remote Muxy workspaces, `muxy.exec` runs on the **remote** host. You se
 
 ```bash
 npm run build   # required for Muxy Reload to pick up changes
-npm test        # pure unit tests (no Muxy runtime)
+npm test        # Bun unit + fixture tests (no Muxy runtime)
 ```
 
-Build copies `package.json` and `scripts/` into `dist/` (publish pipeline ships only `dist/`).
+Build copies `package.json` into `dist/` and bundles the resume-picker IIFE from shared scan modules (publish pipeline ships only `dist/`).
 
 ## Layout
 
 ```
-src/panel/app.js              # panel UI (chips, groups, rows)
-src/lib/sessions/             # detection, grouping, manage/scan bridge
-src/lib/sessions/scanner.py   # authoritative scanner (also embedded in picker)
-src/lib/sessions/manage.py    # rename / delete host worker
-src/lib/provider-icons.js     # vendored monochrome Muxy ProviderIcons
-src/assets/provider-icons/    # SVG sources (re-copy from muxy core if needed)
-scripts/scan-sessions.py      # synced copy of scanner.py for CLI / dist
-scripts/resume-picker.js      # palette runScript modal
-doc/                          # implementation plans & research
+src/panel/app.js                 # panel UI (chips, groups, rows)
+src/lib/host-fs.js               # createHostFs(exec) over fixed host binaries
+src/lib/sessions/                # detection, grouping, manage/scan façade
+src/lib/sessions/scan/*          # per-provider pure JS scanners
+src/lib/sessions/manage/*        # rename / delete via host-fs
+src/lib/provider-icons.js        # vendored monochrome Muxy ProviderIcons
+src/assets/provider-icons/       # SVG sources (re-copy from muxy core if needed)
+scripts/resume-picker-entry.js   # palette entry (bundled to IIFE)
+scripts/resume-picker.built.js   # built IIFE for runScript
+test/                            # Bun tests (host-fs, scan, manage, helpers)
 ```

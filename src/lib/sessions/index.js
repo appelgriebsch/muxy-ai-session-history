@@ -1,5 +1,5 @@
 import { buildGroups, filterGroups, flattenSessions } from "@/lib/sessions/group";
-import { ensurePython3, listSessionsForCli } from "@/lib/sessions/scan";
+import { ensureHostToolsReady, listSessionsForCli } from "@/lib/sessions/scan";
 import { detectInstalled } from "@/lib/sessions/which";
 import { providerById } from "@/lib/sessions/providers";
 
@@ -9,7 +9,7 @@ const GLOBAL_CAP = 80;
  * Load all sessions for installed CLIs at cwd.
  * @param {string} cwd
  * @param {{ archivedSet?: Set<string>, exec?: Function }} [opts]
- * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli, pythonMissing?: boolean }>}
+ * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli, hostToolsMissing?: boolean }>}
  */
 export async function listAll(cwd, opts = {}) {
   const { archivedSet } = opts;
@@ -22,17 +22,17 @@ export async function listAll(cwd, opts = {}) {
     return { installed, groups: [], sessionsByCli, errorsByCli };
   }
 
-  const hasPython = await ensurePython3(exec);
-  if (!hasPython) {
+  const hasTools = await ensureHostToolsReady(exec);
+  if (!hasTools) {
     return {
       installed,
       groups: [],
       sessionsByCli,
       errorsByCli: {
-        _python:
-          "Python 3 is required to read CLI session stores. Install python3 (Xcode CLT or python.org) and refresh.",
+        _host:
+          "Host tools (cat, ls, stat, tee, …) are required to read CLI session stores. Install coreutils/Xcode CLT and refresh.",
       },
-      pythonMissing: true,
+      hostToolsMissing: true,
     };
   }
 

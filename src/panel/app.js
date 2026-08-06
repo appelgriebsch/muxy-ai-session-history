@@ -50,7 +50,8 @@ export class SessionsPanel {
     this.busyId = null;
     this.showArchived = false;
     this.archivedSet = new Set();
-    this.pythonMissing = false;
+    this.hostToolsMissing = false;
+    this.refreshing = false;
     this.editingKey = null;
     this.editDraft = "";
     this.editError = null;
@@ -163,23 +164,61 @@ export class SessionsPanel {
     await this.refresh();
   }
 
-  async refresh() {
-    this.clearInlineModes();
-    this._pendingFocus = null;
-    this.loading = true;
-    this.error = null;
-    this.render();
+  /**
+   * Soft re-list without blanking the panel (used after rename/delete/archive).
+   */
+  async relistQuiet() {
     try {
-      this.cwd = await activeCwd();
       this.archivedSet = await getArchivedSessions();
-      const { installed, groups, pythonMissing, errorsByCli } = await listAll(this.cwd, {
+      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd, {
         archivedSet: this.archivedSet,
       });
       this.installed = installed;
       this.groups = groups;
-      this.pythonMissing = Boolean(pythonMissing);
-      if (this.pythonMissing && errorsByCli?._python) {
-        this.error = errorsByCli._python;
+      this.hostToolsMissing = Boolean(hostToolsMissing);
+      if (this.hostToolsMissing && errorsByCli?._host) {
+        this.error = errorsByCli._host;
+      } else {
+        this.error = null;
+      }
+    } catch (err) {
+      // Keep previous groups visible; surface via notification if possible.
+      try {
+        await muxy.notifications.notify({
+          title: "Could not refresh sessions",
+          body: err?.message || String(err),
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  async refresh() {
+    this.clearInlineModes();
+    this._pendingFocus = null;
+    const hasData = this.groups.length > 0 || this.installed.length > 0;
+    if (hasData) {
+      this.refreshing = true;
+    } else {
+      this.loading = true;
+    }
+    // Only clear global error on full cold load; keep list during SWR refresh.
+    if (!hasData) this.error = null;
+    this.render();
+    try {
+      this.cwd = await activeCwd();
+      this.archivedSet = await getArchivedSessions();
+      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd, {
+        archivedSet: this.archivedSet,
+      });
+      this.installed = installed;
+      this.groups = groups;
+      this.hostToolsMissing = Boolean(hostToolsMissing);
+      if (this.hostToolsMissing && errorsByCli?._host) {
+        this.error = errorsByCli._host;
+      } else {
+        this.error = null;
       }
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
         this.filter = "all";
@@ -202,12 +241,16 @@ export class SessionsPanel {
       }
     } catch (err) {
       this.error = err?.message || String(err);
-      this.installed = [];
-      this.groups = [];
-      this.pythonMissing = false;
+      // Hard failure only blanks when we had no prior data.
+      if (!hasData) {
+        this.installed = [];
+        this.groups = [];
+      }
+      this.hostToolsMissing = false;
       this.clearInlineModes();
     } finally {
       this.loading = false;
+      this.refreshing = false;
       this.render();
     }
   }
@@ -336,7 +379,9 @@ export class SessionsPanel {
       this._lastEditedKey = key;
       this.confirmingDeleteKey = null;
       this.busyId = null;
-      await this.refresh();
+      await this.relistQuiet();
+      this._pendingFocus = "row";
+      this.render();
     } catch (err) {
       try {
         await muxy.notifications.notify({
@@ -381,7 +426,7 @@ export class SessionsPanel {
       this._lastEditedKey = key;
       this.clearEditState();
       this.busyId = null;
-      await this.refresh();
+      await this.relistQuiet();
       this._pendingFocus = "row";
       this.render();
     } catch (err) {
@@ -407,9 +452,7 @@ export class SessionsPanel {
     this.render();
     try {
       await archiveSession(session.cli, session.id, newArchived);
-      this.archivedSet = await getArchivedSessions();
-      const { groups } = await listAll(this.cwd, { archivedSet: this.archivedSet });
-      this.groups = groups;
+      await this.relistQuiet();
     } catch (err) {
       try {
         await muxy.notifications.notify({
@@ -496,11 +539,11 @@ export class SessionsPanel {
       h(
         "div",
         { class: "min-h-0 flex-1 overflow-y-auto px-1 pb-2" },
-        this.loading
+        this.loading && !this.groups.length
           ? this.emptyState("Loading sessions…")
-          : this.error
+          : this.error && !this.groups.length
             ? this.emptyState(this.error)
-            : !this.installed.length
+            : !this.installed.length && !this.loading
               ? this.noCliState()
               : this.filter === "all"
                 ? this.groupedBody(visible)
@@ -566,10 +609,25 @@ export class SessionsPanel {
     return h(
       "div",
       { class: "flex flex-col gap-1" },
+      this.refreshing
+        ? h(
+            "div",
+            {
+              role: "status",
+              "aria-live": "polite",
+              class: "px-2 py-1 text-[11px] text-muted-foreground",
+            },
+            "Refreshing…",
+          )
+        : null,
       ...errors.map((g) =>
         h(
           "div",
-          { class: "px-2 py-1 text-[11px] text-muted-foreground" },
+          {
+            role: "status",
+            "aria-live": "polite",
+            class: "px-2 py-1 text-[11px] text-muted-foreground",
+          },
           `${g.displayName}: ${g.error}`,
         ),
       ),
@@ -1043,6 +1101,8 @@ export class SessionsPanel {
     return h(
       "div",
       {
+        role: "status",
+        "aria-live": "polite",
         class:
           "flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-[12px] text-muted-foreground",
       },

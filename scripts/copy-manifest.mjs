@@ -1,31 +1,58 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as esbuild from "esbuild";
 
-const root = resolve(import.meta.dirname, "..");
+const root = resolve(import.meta.dirname ?? dirname(fileURLToPath(import.meta.url)), "..");
 const dist = resolve(root, "dist");
 const distScripts = resolve(dist, "scripts");
-const canonicalScanner = resolve(root, "src/lib/sessions/scanner.py");
-const scriptsScanner = resolve(root, "scripts/scan-sessions.py");
-
-const canonicalText = await readFile(canonicalScanner, "utf8");
-const scriptsText = await readFile(scriptsScanner, "utf8");
-if (canonicalText !== scriptsText) {
-  // Keep repo CLI helper identical to the panel scanner source of truth.
-  await writeFile(scriptsScanner, canonicalText, "utf8");
-  console.log("Synced scripts/scan-sessions.py from src/lib/sessions/scanner.py");
-}
+const srcRoot = resolve(root, "src");
 
 await mkdir(dist, { recursive: true });
 await mkdir(distScripts, { recursive: true });
 await copyFile(resolve(root, "package.json"), resolve(dist, "package.json"));
-await copyFile(canonicalScanner, resolve(distScripts, "scan-sessions.py"));
 
-const scanner = canonicalText;
-const b64 = Buffer.from(scanner, "utf8").toString("base64");
-const pickerSrc = await readFile(resolve(root, "scripts/resume-picker.js"), "utf8");
-const pickerOut = pickerSrc.replaceAll("__SCANNER_SOURCE_B64__", b64);
-await writeFile(resolve(distScripts, "resume-picker.js"), pickerOut, "utf8");
-// Load Unpacked from project root resolves scripts from the package root.
-await writeFile(resolve(root, "scripts/resume-picker.built.js"), pickerOut, "utf8");
-// Keep dist path consistent with package.json script entry for published installs.
-await writeFile(resolve(distScripts, "resume-picker.built.js"), pickerOut, "utf8");
+// Bundle resume-picker as a single IIFE from shared JS modules (no Python).
+const pickerOut = resolve(root, "scripts/resume-picker.built.js");
+const pickerDist = resolve(distScripts, "resume-picker.built.js");
+const pickerDistAlt = resolve(distScripts, "resume-picker.js");
+
+await esbuild.build({
+  entryPoints: [resolve(root, "scripts/resume-picker-entry.js")],
+  bundle: true,
+  format: "iife",
+  platform: "neutral",
+  target: ["es2020"],
+  outfile: pickerOut,
+  logLevel: "warning",
+  // Resolve @/… the same way Vite does for the panel.
+  plugins: [
+    {
+      name: "alias-at",
+      setup(build) {
+        build.onResolve({ filter: /^@\// }, (args) => ({
+          path: resolve(srcRoot, args.path.slice(2)),
+        }));
+      },
+    },
+  ],
+});
+
+const built = await readFile(pickerOut, "utf8");
+// Guard rails: no bare ESM, no python3 runtime.
+if (/\bimport\s+/.test(built) && !built.includes("/*")) {
+  // esbuild IIFE should not leave import statements; fail if present at start of lines.
+  if (/^\s*import\s+/m.test(built)) {
+    throw new Error("resume-picker.built.js still contains ESM import statements");
+  }
+}
+if (/\bexport\s+/.test(built) && /^\s*export\s+/m.test(built)) {
+  throw new Error("resume-picker.built.js still contains ESM export statements");
+}
+if (/\bpython3\b/.test(built)) {
+  throw new Error("resume-picker.built.js must not reference python3");
+}
+
+await writeFile(pickerDist, built, "utf8");
+await writeFile(pickerDistAlt, built, "utf8");
+console.log("Built scripts/resume-picker.built.js (IIFE, no Python)");
