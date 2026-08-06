@@ -27,13 +27,23 @@ const RESUME = {
 const UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const SESSION_ID_RE = /^[0-9a-zA-Z][0-9a-zA-Z._-]{5,128}$/;
+const COPILOT_STUB_PREFIXES = ["optimistic-chat-", "pending-session"];
 
 function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
 
+function isCopilotStubId(id) {
+  if (typeof id !== "string" || !id) return true;
+  const lower = id.toLowerCase();
+  return COPILOT_STUB_PREFIXES.some(function (p) {
+    return lower.startsWith(p);
+  });
+}
+
 function isSafeSessionId(id) {
   if (typeof id !== "string" || !id) return false;
+  if (isCopilotStubId(id)) return false;
   if (UUID_RE.test(id)) return true;
   return SESSION_ID_RE.test(id) && !/[\s;'"`$|<>]/.test(id);
 }
@@ -200,7 +210,7 @@ if (!cwd) {
       if (!items.length) {
         muxy.notifications.notify({
           title: "AI Sessions",
-          body: "No sessions for this folder",
+          body: "No resumable sessions for this folder",
         });
       } else {
         muxy.modal.open({

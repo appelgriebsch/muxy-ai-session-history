@@ -5,6 +5,13 @@ import { shellQuote } from "../src/lib/shell-quote.js";
 import { buildResumeCommand, buildStartCommand } from "../src/lib/resume.js";
 import { buildGroups, filterGroups, groupByDate } from "../src/lib/sessions/group.js";
 import { dateGroup, relativeTime } from "../src/lib/time.js";
+import { PROVIDERS, providerById } from "../src/lib/sessions/providers.js";
+import {
+  editTargetStillPresent,
+  evaluateRenameDraft,
+  findSessionByKey,
+  sessionRowKey,
+} from "../src/lib/sessions/inline-rename.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -15,6 +22,14 @@ describe("sanitize", () => {
     assert.equal(isSafeSessionId("019fd37f-cc78-76c3-ba12-c5008005b813"), true);
     assert.equal(isSafeSessionId("abc;rm -rf /"), false);
     assert.equal(isSafeSessionId("short"), false);
+  });
+
+  it("rejects Copilot stub id prefixes", () => {
+    assert.equal(
+      isSafeSessionId("optimistic-chat-e4b462a3-3628-4aad-90ae-43b9c4fee922"),
+      false,
+    );
+    assert.equal(isSafeSessionId("pending-session-draft-abc123"), false);
   });
 });
 
@@ -108,4 +123,93 @@ describe("groupByDate", () => {
 
 function thr_ms(minutes) {
   return minutes * 60 * 1000;
-}
+};
+
+describe("providers capabilities", () => {
+  it("every provider has a capabilities object with rename/archive/delete booleans", () => {
+    for (const p of PROVIDERS) {
+      assert.ok(p.capabilities, `${p.id} missing capabilities`);
+      assert.equal(typeof p.capabilities.rename, "boolean", `${p.id}.capabilities.rename`);
+      assert.equal(typeof p.capabilities.archive, "boolean", `${p.id}.capabilities.archive`);
+      assert.equal(typeof p.capabilities.delete, "boolean", `${p.id}.capabilities.delete`);
+    }
+  });
+
+  it("archive is true for all providers", () => {
+    for (const p of PROVIDERS) {
+      assert.equal(p.capabilities.archive, true, `${p.id} should support archive`);
+    }
+  });
+
+  it("grok supports rename and delete", () => {
+    const grok = providerById("grok");
+    assert.equal(grok.capabilities.rename, true);
+    assert.equal(grok.capabilities.delete, true);
+  });
+
+  it("claude supports delete but not rename", () => {
+    const claude = providerById("claude");
+    assert.equal(claude.capabilities.rename, false);
+    assert.equal(claude.capabilities.delete, true);
+  });
+
+  it("codex supports rename and archive but not delete", () => {
+    const codex = providerById("codex");
+    assert.equal(codex.capabilities.rename, true);
+    assert.equal(codex.capabilities.archive, true);
+    assert.equal(codex.capabilities.delete, false);
+  });
+
+  it("copilot supports rename and archive but not delete", () => {
+    const copilot = providerById("copilot");
+    assert.equal(copilot.capabilities.rename, true);
+    assert.equal(copilot.capabilities.archive, true);
+    assert.equal(copilot.capabilities.delete, false);
+  });
+
+  it("archive is Muxy-only (all providers claim archive without native delete of store)", () => {
+    for (const p of PROVIDERS) {
+      assert.equal(p.capabilities.archive, true);
+    }
+  });
+});
+
+describe("inline-rename helpers", () => {
+  it("sessionRowKey joins cli and id", () => {
+    assert.equal(sessionRowKey("grok", "abc"), "grok:abc");
+  });
+
+  it("evaluateRenameDraft rejects empty and whitespace", () => {
+    assert.deepEqual(evaluateRenameDraft("Old", ""), { action: "empty" });
+    assert.deepEqual(evaluateRenameDraft("Old", "   "), { action: "empty" });
+    assert.deepEqual(evaluateRenameDraft("Old", null), { action: "empty" });
+  });
+
+  it("evaluateRenameDraft treats trimmed equal titles as unchanged", () => {
+    assert.deepEqual(evaluateRenameDraft("Hello", "Hello"), { action: "unchanged" });
+    assert.deepEqual(evaluateRenameDraft("Hello", "  Hello  "), { action: "unchanged" });
+  });
+
+  it("evaluateRenameDraft commits trimmed new titles", () => {
+    assert.deepEqual(evaluateRenameDraft("Old", "  New title  "), {
+      action: "commit",
+      title: "New title",
+    });
+  });
+
+  it("editTargetStillPresent finds keys in groups", () => {
+    const groups = [
+      { sessions: [{ cli: "grok", id: "1" }] },
+      { sessions: [{ cli: "codex", id: "2" }] },
+    ];
+    assert.equal(editTargetStillPresent("grok:1", groups), true);
+    assert.equal(editTargetStillPresent("codex:9", groups), false);
+    assert.equal(editTargetStillPresent(null, groups), false);
+  });
+
+  it("findSessionByKey returns the matching session", () => {
+    const groups = [{ sessions: [{ cli: "cursor", id: "x", title: "T" }] }];
+    assert.equal(findSessionByKey("cursor:x", groups)?.title, "T");
+    assert.equal(findSessionByKey("cursor:y", groups), null);
+  });
+});

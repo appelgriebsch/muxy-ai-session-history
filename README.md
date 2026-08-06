@@ -7,10 +7,16 @@ Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cur
 ## Features
 
 - **Multi-provider list** — detects installed CLIs; default **All** view groups sessions by tool
-- **Filter chips** — narrow to one provider
+- **Filter chips** — Muxy provider icons + labels; narrow to one provider
+- **Readable titles** — Copilot uses `data.db` / `workspace.yaml` / first user message (never bare UUID alone)
+- **Rename / archive / delete** — capability-gated per CLI; rename and delete confirm are **inline in the panel** (no host prompt/confirm UI); **archive is Muxy-only** (does not flip native Codex `archived`)
 - **Resume** — opens a new terminal in the active worktree and runs the CLI’s resume command
 - **Start new** — launches preferred / first-available CLI without resume
 - **Palette** — **AI Sessions: Resume…** searchable modal across all installed providers
+
+## Requirements
+
+- **Python 3** on PATH (`python3`) on the host where sessions live (local or SSH remote). The panel runs scanners via `muxy.exec(["python3", "-", …], { stdin })`.
 
 ## Install (dev)
 
@@ -33,8 +39,18 @@ Sessions are **not** from `muxy.agents.list()` (live status only). The extension
 | Grok | `~/.grok/sessions/<urlencode(cwd)>/` | `grok --resume <id>` |
 | Claude | `~/.claude/projects/<slug>/` | `claude --resume <id>` |
 | Codex | `~/.codex/` (SQLite / rollouts) | `codex resume <id>` |
-| Copilot | `~/.copilot/` | `copilot --resume=<id>` |
+| Copilot | `~/.copilot/session-state/`, `data.db` | `copilot --resume=<id>` |
 | Cursor | `~/.cursor/chats/<md5(cwd)>/` | `cursor-agent --resume <id>` |
+
+### Capabilities
+
+| CLI | Rename | Archive (Muxy storage) | Delete |
+| --- | --- | --- | --- |
+| Grok | yes | yes | yes |
+| Claude | no | yes | yes |
+| Codex | yes (`threads.title`) | yes (not native DB flag) | no |
+| Copilot | yes (db + workspace.yaml + meta) | yes | no |
+| Cursor | yes | yes | yes |
 
 Only **installed** binaries appear as chips. Empty providers are omitted. If one adapter fails, others still show.
 
@@ -60,9 +76,13 @@ Build copies `package.json` and `scripts/` into `dist/` (publish pipeline ships 
 ## Layout
 
 ```
-src/panel/app.js           # panel UI (chips, groups, rows)
-src/lib/sessions/          # detection, grouping, scanner bridge
-src/lib/sessions/scanner.py
-scripts/scan-sessions.py   # same scanner for palette / CLI use
-scripts/resume-picker.js   # palette runScript modal
+src/panel/app.js              # panel UI (chips, groups, rows)
+src/lib/sessions/             # detection, grouping, manage/scan bridge
+src/lib/sessions/scanner.py   # authoritative scanner (also embedded in picker)
+src/lib/sessions/manage.py    # rename / delete host worker
+src/lib/provider-icons.js     # vendored monochrome Muxy ProviderIcons
+src/assets/provider-icons/    # SVG sources (re-copy from muxy core if needed)
+scripts/scan-sessions.py      # synced copy of scanner.py for CLI / dist
+scripts/resume-picker.js      # palette runScript modal
+doc/                          # implementation plans & research
 ```
