@@ -1,10 +1,8 @@
 /**
  * Returns a relative date-group label for a timestamp (ms).
  * Buckets: "Today", "Yesterday", "This Week", "Last Week", "This Month",
- * "Last Month", or the full month+year string for older dates.
+ * "Last Month", "Unknown" (when missing/0), or the full month+year string for older dates.
  */
-export function dateGroup(ms) {
-  if (!ms) return "Unknown";
   const now = new Date();
   const date = new Date(ms);
 

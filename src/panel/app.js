@@ -175,7 +175,9 @@ export class SessionsPanel {
       return this.emptyState("No sessions for this folder", true);
     }
     const errors = groups.filter((g) => g.error);
-    const allSessions = groups.flatMap((g) => g.sessions);
+    const allSessions = groups
+      .flatMap((g) => g.sessions)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     const dateGroups = groupByDate(allSessions, dateGroup);
     return h(
       "div",
