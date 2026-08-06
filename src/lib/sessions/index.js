@@ -8,11 +8,10 @@ const GLOBAL_CAP = 80;
 /**
  * Load all sessions for installed CLIs at cwd.
  * @param {string} cwd
- * @param {{ archivedSet?: Set<string>, exec?: Function }} [opts]
+ * @param {{ exec?: Function }} [opts]
  * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli, hostToolsMissing?: boolean }>}
  */
 export async function listAll(cwd, opts = {}) {
-  const { archivedSet } = opts;
   const exec = opts.exec ?? ((argv, options) => muxy.exec(argv, options));
   const installed = await detectInstalled();
   const sessionsByCli = {};
@@ -38,7 +37,7 @@ export async function listAll(cwd, opts = {}) {
 
   const results = await Promise.allSettled(
     installed.map(async (provider) => {
-      const sessions = await listSessionsForCli(provider.id, cwd, { archivedSet, exec });
+      const sessions = await listSessionsForCli(provider.id, cwd, { exec });
       return { id: provider.id, sessions };
     }),
   );
