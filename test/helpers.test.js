@@ -133,18 +133,16 @@ function thr_ms(minutes) {
 };
 
 describe("providers capabilities", () => {
-  it("every provider has a capabilities object with rename/archive/delete booleans", () => {
+  it("every provider has a capabilities object with rename/delete booleans only", () => {
     for (const p of PROVIDERS) {
       assert.ok(p.capabilities, `${p.id} missing capabilities`);
       assert.equal(typeof p.capabilities.rename, "boolean", `${p.id}.capabilities.rename`);
-      assert.equal(typeof p.capabilities.archive, "boolean", `${p.id}.capabilities.archive`);
       assert.equal(typeof p.capabilities.delete, "boolean", `${p.id}.capabilities.delete`);
-    }
-  });
-
-  it("archive is true for all providers", () => {
-    for (const p of PROVIDERS) {
-      assert.equal(p.capabilities.archive, true, `${p.id} should support archive`);
+      assert.equal(
+        "archive" in p.capabilities,
+        false,
+        `${p.id} should not expose capabilities.archive`,
+      );
     }
   });
 
@@ -160,24 +158,16 @@ describe("providers capabilities", () => {
     assert.equal(claude.capabilities.delete, true);
   });
 
-  it("codex supports rename and archive but not delete", () => {
+  it("codex supports rename but not delete", () => {
     const codex = providerById("codex");
     assert.equal(codex.capabilities.rename, true);
-    assert.equal(codex.capabilities.archive, true);
     assert.equal(codex.capabilities.delete, false);
   });
 
-  it("copilot supports rename and archive but not delete", () => {
+  it("copilot supports rename but not delete", () => {
     const copilot = providerById("copilot");
     assert.equal(copilot.capabilities.rename, true);
-    assert.equal(copilot.capabilities.archive, true);
     assert.equal(copilot.capabilities.delete, false);
-  });
-
-  it("archive is Muxy-only (all providers claim archive without native delete of store)", () => {
-    for (const p of PROVIDERS) {
-      assert.equal(p.capabilities.archive, true);
-    }
   });
 });
 

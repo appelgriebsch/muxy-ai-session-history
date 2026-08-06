@@ -3,20 +3,17 @@ import { icon } from "@/lib/icons";
 import { providerIcon } from "@/lib/provider-icons";
 import { activeCwd, shortPath } from "@/lib/cwd";
 import {
-  getArchivedSessions,
   getListFilter,
   getPreferredCli,
-  getShowArchived,
   setListFilter,
   setPreferredCli,
-  setShowArchived,
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
 import { filterGroups, listAll } from "@/lib/sessions/index";
 import { buildStartActionModel, pickStartCli } from "@/lib/sessions/start-cli";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
-import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
+import { deleteSession, renameSession } from "@/lib/sessions/manage";
 import { providerById } from "@/lib/sessions/providers";
 import {
   editTargetStillPresent,
@@ -48,8 +45,6 @@ export class SessionsPanel {
     this.loading = true;
     this.error = null;
     this.busyId = null;
-    this.showArchived = false;
-    this.archivedSet = new Set();
     this.hostToolsMissing = false;
     this.refreshing = false;
     /** Monotonic epoch so overlapping listAll calls cannot clobber newer results. */
@@ -156,8 +151,6 @@ export class SessionsPanel {
   async start() {
     this.preferredCli = await getPreferredCli();
     this.filter = await getListFilter();
-    this.showArchived = await getShowArchived();
-    this.archivedSet = await getArchivedSessions();
 
     muxy.events.subscribe("command.refresh-sessions", () => this.refresh());
     muxy.events.subscribe("project.switched", () => this.refresh());
@@ -167,15 +160,12 @@ export class SessionsPanel {
   }
 
   /**
-   * Soft re-list without blanking the panel (used after rename/delete/archive).
+   * Soft re-list without blanking the panel (used after rename/delete).
    */
   async relistQuiet() {
     const epoch = ++this._listEpoch;
     try {
-      this.archivedSet = await getArchivedSessions();
-      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd, {
-        archivedSet: this.archivedSet,
-      });
+      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd);
       if (epoch !== this._listEpoch) return;
       this.installed = installed;
       // Keep previous groups when host tools vanish mid-session (SWR).
@@ -221,10 +211,7 @@ export class SessionsPanel {
     this.render();
     try {
       this.cwd = await activeCwd();
-      this.archivedSet = await getArchivedSessions();
-      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd, {
-        archivedSet: this.archivedSet,
-      });
+      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd);
       if (epoch !== this._listEpoch) return;
       this.installed = installed;
       if (hostToolsMissing && hasData) {
@@ -340,13 +327,6 @@ export class SessionsPanel {
     }
   }
 
-  async toggleShowArchived() {
-    this.clearInlineModes();
-    this._pendingFocus = null;
-    this.showArchived = !this.showArchived;
-    await setShowArchived(this.showArchived);
-    this.render();
-  }
 
   beginRename(session) {
     if (this.busyId) return;
@@ -466,29 +446,6 @@ export class SessionsPanel {
     }
   }
 
-  async archive(session) {
-    this.clearInlineModes();
-    const newArchived = !session.archived;
-    const key = sessionRowKey(session.cli, session.id);
-    this.busyId = key;
-    this.render();
-    try {
-      await archiveSession(session.cli, session.id, newArchived);
-      await this.relistQuiet();
-    } catch (err) {
-      try {
-        await muxy.notifications.notify({
-          title: newArchived ? "Could not archive session" : "Could not unarchive session",
-          body: err?.message || String(err),
-        });
-      } catch {
-        /* ignore */
-      }
-    } finally {
-      this.busyId = null;
-      this.render();
-    }
-  }
 
   render() {
     clear(this.root);
@@ -538,12 +495,7 @@ export class SessionsPanel {
   }
 
   view() {
-    const allVisible = filterGroups(this.groups, this.filter);
-    // Apply archived filter: unless showArchived is on, hide archived sessions
-    const visible = allVisible.map((g) => ({
-      ...g,
-      sessions: this.showArchived ? g.sessions : g.sessions.filter((s) => !s.archived),
-    })).filter((g) => g.sessions.length || g.error);
+    const visible = filterGroups(this.groups, this.filter);
     const flat =
       this.filter !== "all"
         ? visible.flatMap((g) => g.sessions)
@@ -581,8 +533,6 @@ export class SessionsPanel {
       ...this.installed.map((p) => ({ id: p.id, label: p.displayName, providerId: p.id })),
     ];
 
-    const hasArchived = this.groups.some((g) => g.sessions.some((s) => s.archived));
-
     return h(
       "div",
       { class: "flex flex-wrap items-center gap-1 px-2.5 pt-2.5 pb-1" },
@@ -602,20 +552,6 @@ export class SessionsPanel {
           chip.label,
         ),
       ),
-      (hasArchived || this.showArchived)
-        ? h(
-            "button",
-            {
-              type: "button",
-              class: this.showArchived
-                ? "ml-auto h-6 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none"
-                : "ml-auto h-6 rounded-md border border-border bg-surface px-2 text-[11px] text-foreground outline-none hover:bg-accent",
-              onclick: () => this.toggleShowArchived(),
-            },
-            icon("archive", 10),
-            " Archived",
-          )
-        : null,
     );
   }
 
@@ -702,7 +638,7 @@ export class SessionsPanel {
       return h(
         "div",
         {
-          class: `group relative flex w-full items-stretch rounded-md bg-destructive/10${session.archived ? " opacity-60" : ""}`,
+          class: "group relative flex w-full items-stretch rounded-md bg-destructive/10",
           "aria-busy": busy ? "true" : "false",
         },
         h(
@@ -810,7 +746,7 @@ export class SessionsPanel {
       return h(
         "div",
         {
-          class: `group relative flex w-full items-stretch rounded-md bg-accent/40${session.archived ? " opacity-60" : ""}`,
+          class: "group relative flex w-full items-stretch rounded-md bg-accent/40",
           "aria-busy": busy ? "true" : "false",
         },
         h(
@@ -824,9 +760,6 @@ export class SessionsPanel {
             "div",
             { class: "flex w-full items-center gap-2" },
             providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
-            session.archived
-              ? icon("archive", 10, "shrink-0 text-muted-foreground")
-              : null,
             h("input", inputAttrs),
             busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
           ),
@@ -900,26 +833,6 @@ export class SessionsPanel {
         ),
       );
     }
-    if (caps.archive) {
-      actionButtons.push(
-        h(
-          "button",
-          {
-            type: "button",
-            title: session.archived ? "Unarchive" : "Archive",
-            "aria-label": session.archived ? "Unarchive" : "Archive",
-            disabled: busy,
-            class:
-              "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
-            onclick: (e) => {
-              e.stopPropagation();
-              this.archive(session);
-            },
-          },
-          icon(session.archived ? "archive-restore" : "archive", 11),
-        ),
-      );
-    }
     if (caps.delete) {
       actionButtons.push(
         h(
@@ -944,7 +857,7 @@ export class SessionsPanel {
     return h(
       "div",
       {
-        class: `group relative flex w-full items-stretch rounded-md hover:bg-accent${session.archived ? " opacity-60" : ""}`,
+        class: "group relative flex w-full items-stretch rounded-md hover:bg-accent",
       },
       h(
         "button",
@@ -960,9 +873,6 @@ export class SessionsPanel {
           "div",
           { class: "flex w-full items-center gap-2" },
           providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
-          session.archived
-            ? icon("archive", 10, "shrink-0 text-muted-foreground")
-            : null,
           h(
             "span",
             { class: "min-w-0 flex-1 truncate text-[12px] text-foreground" },

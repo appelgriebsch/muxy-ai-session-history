@@ -9,7 +9,7 @@ import {
 import { listSessionsJs } from "./scan/index.js";
 import { toPromise } from "./scan/helpers.js";
 
-function normalizeSession(raw, cli, archivedSet) {
+function normalizeSession(raw, cli) {
   if (!raw || typeof raw !== "object") return null;
   const id = raw.id;
   if (!isSafeSessionId(id)) return null;
@@ -20,7 +20,6 @@ function normalizeSession(raw, cli, archivedSet) {
     branch: typeof raw.branch === "string" ? raw.branch : null,
     cwd: typeof raw.cwd === "string" && raw.cwd ? raw.cwd : null,
     cli,
-    archived: archivedSet ? archivedSet.has(`${cli}:${id}`) : false,
   };
 }
 
@@ -65,7 +64,7 @@ async function resolveSqlite(exec) {
  * List sessions for one CLI + cwd via pure JS scanners + host-fs.
  * @param {string} cli
  * @param {string} cwd
- * @param {{ exec?: Function, archivedSet?: Set<string>, fs?: object }} [opts]
+ * @param {{ exec?: Function, fs?: object }} [opts]
  */
 export async function listSessionsForCli(cli, cwd, opts = {}) {
   const exec = opts.exec ?? ((argv, options) => muxy.exec(argv, options));
@@ -74,7 +73,7 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
   try {
     const rows = await listSessionsJs(fs, cli, cwd, { sqliteAvailable });
     return (rows || [])
-      .map((item) => normalizeSession(item, cli, opts.archivedSet))
+      .map((item) => normalizeSession(item, cli))
       .filter(Boolean);
   } catch (err) {
     // Soft-fail message for sqlite-dependent CLIs
@@ -97,7 +96,7 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
  * scanners (await on plain values is fine) so callers may await this.
  * @param {string} cli
  * @param {string} cwd
- * @param {Function | { exec?: Function, archivedSet?: Set<string>, fs?: object }} [execOrOpts]
+ * @param {Function | { exec?: Function, fs?: object }} [execOrOpts]
  */
 export function listSessionsForCliSync(cli, cwd, execOrOpts = muxy.exec) {
   const opts =

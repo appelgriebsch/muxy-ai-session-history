@@ -9,7 +9,7 @@ Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cur
 - **Multi-provider list** — detects installed CLIs; default **All** view groups sessions by tool
 - **Filter chips** — Muxy provider icons + labels; narrow to one provider
 - **Readable titles** — Copilot uses `data.db` / `workspace.yaml` / first user message (never bare UUID alone)
-- **Rename / archive / delete** — capability-gated per CLI; rename and delete confirm are **inline in the panel** (no host prompt/confirm UI); **archive is Muxy-only** (does not flip native Codex `archived`)
+- **Rename / delete** — capability-gated per CLI; rename and delete confirm are **inline in the panel** (no host prompt/confirm UI)
 - **Resume** — opens a new terminal in the active worktree and runs the CLI’s resume command
 - **Start new** — split button: primary starts the last-chosen / first-available CLI; chevron picks which CLI (stored in extension storage)
 - **Palette** — **AI Sessions: Resume…** searchable modal across all installed providers
@@ -50,13 +50,13 @@ Sessions are **not** from `muxy.agents.list()` (live status only). The extension
 
 ### Capabilities
 
-| CLI | Rename | Archive (Muxy storage) | Delete |
-| --- | --- | --- | --- |
-| Grok | yes | yes | yes |
-| Claude | no | yes | yes |
-| Codex | yes (`threads.title`) | yes (not native DB flag) | no |
-| Copilot | yes (db + workspace.yaml + meta) | yes | no |
-| Cursor | yes | yes | yes |
+| CLI | Rename | Delete |
+| --- | --- | --- |
+| Grok | yes | yes |
+| Claude | no | yes |
+| Codex | yes (`threads.title`) | no |
+| Copilot | yes (db + workspace.yaml + meta) | no |
+| Cursor | yes | yes |
 
 Only **installed** binaries appear as chips. Empty providers are omitted. If one adapter fails, others still show.
 
