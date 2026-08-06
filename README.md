@@ -2,7 +2,7 @@
 
 Browse and resume AI coding-agent sessions for the **active worktree**, grouped by provider.
 
-Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cursor Agent** when those binaries are on `PATH`.
+Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, **Cursor Agent**, and **OpenCode** when those binaries are on `PATH`.
 
 ## Features
 
@@ -19,7 +19,7 @@ Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cur
 - **POSIX host tools** on the machine where sessions live (local or SSH remote), used via `muxy.exec` with fixed absolute paths:
   - `/bin/cat`, `/bin/ls`, `/bin/mv`, `/bin/rm`, `/bin/mkdir`
   - `/usr/bin/tee`, `/usr/bin/env`, `/usr/bin/printenv`, `/usr/bin/head`, `/usr/bin/stat`
-- **`/usr/bin/sqlite3`** for **Codex** and **Copilot** session stores (soft-fails those providers if missing; other CLIs still work)
+- **`/usr/bin/sqlite3`** for **Codex**, **Copilot**, and **OpenCode** session stores (soft-fails those providers if missing; other CLIs still work)
 - macOS ships these with the base system / Xcode CLT; Linux remotes need equivalent coreutils + `sqlite3`
 
 `muxy.files` is worktree-sandboxed and **cannot** read `~/.grok`, `~/.claude`, etc. — home session stores are always reached through `commands:exec`.
@@ -40,7 +40,7 @@ Session listing uses `muxy.exec` against home-directory stores (not the worktree
 
 - `/bin/bash` — CLI detection (`command -v`)
 - `/bin/ls`, `/usr/bin/stat`, `/usr/bin/head`, `/usr/bin/printenv` — directory listing and session metadata
-- `/usr/bin/sqlite3` — Codex / Copilot stores
+- `/usr/bin/sqlite3` — Codex / Copilot / OpenCode stores
 - `/bin/cat`, `/usr/bin/tee`, `/bin/mv`, … — rename/delete
 
 Choose **Allow & remember** for each (or the scan will re-prompt on every call if you only tap **Allow**). After grants, scanners batch directory metadata and cap how many session files are opened.
@@ -58,6 +58,7 @@ Sessions are **not** from `muxy.agents.list()` (live status only). The extension
 | Codex | `~/.codex/` (SQLite / rollouts) | `codex resume <id>` |
 | Copilot | `~/.copilot/session-state/`, `data.db` | `copilot --resume=<id>` |
 | Cursor | `~/.cursor/chats/<md5(cwd)>/` | `cursor-agent --resume <id>` |
+| OpenCode | `~/.local/share/opencode/opencode.db` | `opencode --session <id>` |
 
 ### Capabilities
 
@@ -68,6 +69,7 @@ Sessions are **not** from `muxy.agents.list()` (live status only). The extension
 | Codex | yes (`threads.title`) | no |
 | Copilot | yes (db + workspace.yaml + meta) | no |
 | Cursor | yes | yes |
+| OpenCode | yes (`session.title`) | yes (DB row) |
 
 Only **installed** binaries appear as chips. Empty providers are omitted. If one adapter fails, others still show.
 

@@ -105,7 +105,7 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
   } catch (err) {
     // Soft-fail message for sqlite-dependent CLIs
     if (
-      (cli === "codex" || cli === "copilot") &&
+      (cli === "codex" || cli === "copilot" || cli === "opencode") &&
       !sqliteAvailable &&
       /sqlite/i.test(String(err?.message || err))
     ) {

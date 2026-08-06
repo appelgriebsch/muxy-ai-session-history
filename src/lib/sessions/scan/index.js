@@ -3,6 +3,7 @@ import { listCursor } from "./cursor.js";
 import { listClaude } from "./claude.js";
 import { listCodex } from "./codex.js";
 import { listCopilot } from "./copilot.js";
+import { listOpenCode } from "./opencode.js";
 import { toPromise } from "./helpers.js";
 import { hasSqlite3 } from "../../host-fs.js";
 
@@ -30,6 +31,8 @@ export async function listSessionsJs(fs, cli, cwd, opts = {}) {
       return listCodex(fs, cwd, { ...opts, sqliteAvailable });
     case "copilot":
       return listCopilot(fs, cwd, { ...opts, sqliteAvailable });
+    case "opencode":
+      return listOpenCode(fs, cwd, { ...opts, sqliteAvailable });
     default:
       throw new Error(`unknown cli: ${cli}`);
   }
