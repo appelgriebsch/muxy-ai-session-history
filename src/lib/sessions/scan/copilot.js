@@ -8,6 +8,7 @@ import {
   pathMatchesCwd,
   firstUserMessageFromEvents,
   pickDisplayTitle,
+  resolveTitleLikeColumn,
   toPromise,
   mapPool,
 } from "./helpers.js";
@@ -106,7 +107,7 @@ async function readCopilotDataDb(fs, home, store) {
       if (tables.has("sessions")) {
         const scols = await toPromise(fs.sqliteTableColumns(dbPath, "sessions"));
         if (scols.has("id")) {
-          const titleExpr = ["title", "summary", "name"].find((c) => scols.has(c)) || "NULL";
+          const titleExpr = resolveTitleLikeColumn(scols) || "NULL";
           const updatedExpr =
             ["updated_at", "updatedAt", "updated_at_ms", "last_active_at", "created_at"].find(
               (c) => scols.has(c),
@@ -188,7 +189,7 @@ async function readCopilotDataDb(fs, home, store) {
         const cols = await toPromise(fs.sqliteTableColumns(dbPath, table));
         const idCol = ["id", "session_id", "sessionId"].find((c) => cols.has(c));
         if (!idCol) continue;
-        const titleCol = ["title", "name", "summary"].find((c) => cols.has(c));
+        const titleCol = resolveTitleLikeColumn(cols);
         const updatedCol = [
           "updated_at",
           "updatedAt",

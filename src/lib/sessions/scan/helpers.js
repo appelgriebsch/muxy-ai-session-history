@@ -12,6 +12,22 @@ export const CODEX_ROLLOUT_RE =
 
 const WEAK_TITLES = new Set(["", "(untitled)", "untitled", "session"]);
 
+
+/** Title-like column preference for Copilot (and similar) session stores. */
+export const TITLE_LIKE_COLUMNS = ["title", "summary", "name"];
+
+/**
+ * Resolve which title-like column exists on a sessions-like table.
+ * Order matches scan enrichment: title → summary → name.
+ * @param {Set<string> | Iterable<string>} cols
+ * @returns {string | null}
+ */
+export function resolveTitleLikeColumn(cols) {
+  const set = cols instanceof Set ? cols : new Set(cols);
+  return TITLE_LIKE_COLUMNS.find((c) => set.has(c)) || null;
+}
+
+
 /**
  * Match Python urllib.parse.quote(s, safe="") for path segments.
  * Unquoted: A-Za-z0-9_.-

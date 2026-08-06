@@ -13,7 +13,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostFs } from "../src/lib/host-fs.js";
 import { renameSessionJs, deleteSessionJs } from "../src/lib/sessions/manage/index.js";
-import { pathQuote, slugify } from "../src/lib/sessions/scan/helpers.js";
+import { listCopilot } from "../src/lib/sessions/scan/copilot.js";
+import { pathQuote, slugify, resolveTitleLikeColumn } from "../src/lib/sessions/scan/helpers.js";
 
 const SID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const SID2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -124,11 +125,133 @@ describe("manage rename/delete", () => {
       { encoding: "utf8" },
     ).stdout.trim();
     assert.equal(title, "Copilot Fresh");
-    assert.match(readFileSync(join(state, "workspace.yaml"), "utf8"), /name: "Copilot Fresh"/);
+    const yamlMulti = readFileSync(join(state, "workspace.yaml"), "utf8");
+    assert.match(yamlMulti, /name: "Copilot Fresh"/);
+    assert.match(yamlMulti, /user_named:\s*true/);
     const meta = JSON.parse(readFileSync(join(state, "meta.json"), "utf8"));
     assert.equal(meta.title, "Copilot Fresh");
     assert.equal(meta.name, "Copilot Fresh");
     assert.ok(existsSync(state));
+  });
+
+
+  it("rename copilot writes summary on session-store.db (production shape)", async () => {
+    const state = join(home, ".copilot", "session-state", SID);
+    mkdirSync(state, { recursive: true });
+    writeFileSync(
+      join(state, "workspace.yaml"),
+      `id: ${SID}\ncwd: /tmp/p\nname: OldYaml\nuser_named: false\n`,
+    );
+    writeFileSync(join(state, "meta.json"), JSON.stringify({ title: "OldMeta" }));
+    writeFileSync(join(state, "events.jsonl"), '{"type":"user.message","data":{"content":"hi"}}\n');
+    const storeDb = join(home, ".copilot", "session-store.db");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        storeDb,
+        `CREATE TABLE sessions (id TEXT PRIMARY KEY, summary TEXT, cwd TEXT, updated_at TEXT);
+         CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id TEXT);
+         INSERT INTO sessions VALUES ('${SID}', 'Old Summary', '/tmp/p', '2026-08-06T12:00:00Z');
+         INSERT INTO turns VALUES (1, '${SID}');`,
+      ],
+      { encoding: "utf8" },
+    );
+    const fs = createHostFs(realExec);
+    await renameSessionJs(fs, "copilot", SID, "Renamed From Summary");
+    const summary = spawnSync(
+      "/usr/bin/sqlite3",
+      [storeDb, `SELECT summary FROM sessions WHERE id='${SID}'`],
+      { encoding: "utf8" },
+    ).stdout.trim();
+    assert.equal(summary, "Renamed From Summary");
+    const yaml = readFileSync(join(state, "workspace.yaml"), "utf8");
+    assert.match(yaml, /name: "Renamed From Summary"/);
+    assert.match(yaml, /user_named:\s*true/);
+    const meta = JSON.parse(readFileSync(join(state, "meta.json"), "utf8"));
+    assert.equal(meta.title, "Renamed From Summary");
+    assert.equal(meta.name, "Renamed From Summary");
+  });
+
+  it("rename copilot then listCopilot returns new title (summary store)", async () => {
+    const PROJ = "/tmp/copilot-proj";
+    const state = join(home, ".copilot", "session-state", SID);
+    mkdirSync(state, { recursive: true });
+    writeFileSync(
+      join(state, "workspace.yaml"),
+      `id: ${SID}\ncwd: ${PROJ}\nbranch: main\nname: Yaml Old\n`,
+    );
+    writeFileSync(
+      join(state, "events.jsonl"),
+      '{"type":"user.message","data":{"content":"first user"}}\n',
+    );
+    const storeDb = join(home, ".copilot", "session-store.db");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        storeDb,
+        `CREATE TABLE sessions (id TEXT PRIMARY KEY, summary TEXT, cwd TEXT, branch TEXT, updated_at TEXT);
+         CREATE TABLE turns (id INTEGER PRIMARY KEY, session_id TEXT);
+         INSERT INTO sessions VALUES ('${SID}', 'Old Summary Title', '${PROJ}', 'main', '2026-08-06T12:00:00Z');
+         INSERT INTO turns VALUES (1, '${SID}');`,
+      ],
+      { encoding: "utf8" },
+    );
+    const fs = createHostFs(realExec);
+    await renameSessionJs(fs, "copilot", SID, "Persisted New Title");
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome: join(home, ".copilot"),
+      sqliteAvailable: true,
+    });
+    const hit = rows.find((r) => r.id === SID);
+    assert.ok(hit, "session should list after rename");
+    assert.equal(hit.title, "Persisted New Title");
+  });
+
+
+  it("rename copilot fails loud when authoritative DB UPDATE fails", async () => {
+    const state = join(home, ".copilot", "session-state", SID);
+    mkdirSync(state, { recursive: true });
+    writeFileSync(join(state, "workspace.yaml"), `id: ${SID}\ncwd: /tmp/p\nname: OldYaml\n`);
+    writeFileSync(join(state, "meta.json"), JSON.stringify({ title: "OldMeta" }));
+    const storeDb = join(home, ".copilot", "session-store.db");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        storeDb,
+        `CREATE TABLE sessions (id TEXT PRIMARY KEY, summary TEXT);
+         INSERT INTO sessions VALUES ('${SID}', 'Old Summary');`,
+      ],
+      { encoding: "utf8" },
+    );
+    const base = createHostFs(realExec);
+    const fs = {
+      ...base,
+      sqliteExec(dbPath, sql) {
+        if (String(sql).includes("UPDATE sessions")) {
+          return Promise.reject(new Error("simulated UPDATE failure"));
+        }
+        return base.sqliteExec(dbPath, sql);
+      },
+    };
+    await assert.rejects(
+      () => renameSessionJs(fs, "copilot", SID, "Should Not Persist"),
+      /Could not rename Copilot session/i,
+    );
+    const summary = spawnSync(
+      "/usr/bin/sqlite3",
+      [storeDb, `SELECT summary FROM sessions WHERE id='${SID}'`],
+      { encoding: "utf8" },
+    ).stdout.trim();
+    assert.equal(summary, "Old Summary");
+    assert.match(readFileSync(join(state, "workspace.yaml"), "utf8"), /name: OldYaml/);
+    assert.equal(JSON.parse(readFileSync(join(state, "meta.json"), "utf8")).title, "OldMeta");
+  });
+
+  it("resolveTitleLikeColumn prefers title then summary then name", () => {
+    assert.equal(resolveTitleLikeColumn(new Set(["summary", "name"])), "summary");
+    assert.equal(resolveTitleLikeColumn(new Set(["name"])), "name");
+    assert.equal(resolveTitleLikeColumn(new Set(["title", "summary"])), "title");
+    assert.equal(resolveTitleLikeColumn(new Set(["id"])), null);
   });
 
   it("rename claude unsupported", async () => {

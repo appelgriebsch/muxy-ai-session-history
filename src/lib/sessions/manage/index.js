@@ -1,6 +1,6 @@
 import { joinPath, sqlQuote } from "../../host-fs.js";
 import { isSafeSessionId } from "../../sanitize.js";
-import { slugify, toPromise } from "../scan/helpers.js";
+import { slugify, toPromise, resolveTitleLikeColumn } from "../scan/helpers.js";
 
 /**
  * @param {*} fs
@@ -59,7 +59,9 @@ async function updateYamlName(fs, path, newTitle) {
     }
   }
   const keyRe = /^(\s*)name\s*:/;
+  const userNamedRe = /^(\s*)user_named\s*:/;
   let replaced = false;
+  let sawUserNamed = false;
   const outLines = [];
   const safe = newTitle.replace(/\n/g, " ").replace(/"/g, '\\"');
   for (const line of lines) {
@@ -67,11 +69,18 @@ async function updateYamlName(fs, path, newTitle) {
     if (m && !replaced) {
       outLines.push(`${m[1]}name: "${safe}"`);
       replaced = true;
-    } else {
-      outLines.push(line);
+      continue;
     }
+    const um = userNamedRe.exec(line);
+    if (um) {
+      outLines.push(`${um[1]}user_named: true`);
+      sawUserNamed = true;
+      continue;
+    }
+    outLines.push(line);
   }
   if (!replaced) outLines.push(`name: "${safe}"`);
+  if (!sawUserNamed) outLines.push(`user_named: true`);
   try {
     await toPromise(fs.writeAtomic(path, `${outLines.join("\n")}\n`));
     return true;
@@ -169,15 +178,19 @@ async function renameCopilot(fs, home, sessionId, newTitle) {
 
   let wrote = false;
   const errors = [];
+  /** If a sessions row exists with a title-like column, UPDATE must succeed. */
+  let authoritativeDbUpdateFailed = false;
 
-  for (const dbName of ["data.db", "session-store.db"]) {
+  for (const dbName of ["session-store.db", "data.db"]) {
     const dbPath = joinPath(copilotHome, dbName);
     if (!(await toPromise(fs.isFile(dbPath)))) continue;
     try {
       const tables = await toPromise(fs.sqliteTables(dbPath));
       if (!tables.has("sessions")) continue;
       const cols = await toPromise(fs.sqliteTableColumns(dbPath, "sessions"));
-      if (!cols.has("id") || !cols.has("title")) continue;
+      if (!cols.has("id")) continue;
+      const titleCol = resolveTitleLikeColumn(cols);
+      if (!titleCol) continue;
       const existing = await toPromise(
         fs.sqliteQuery(
           dbPath,
@@ -185,16 +198,26 @@ async function renameCopilot(fs, home, sessionId, newTitle) {
         ),
       );
       if (!existing.length) continue;
-      await toPromise(
-        fs.sqliteExec(
-          dbPath,
-          `UPDATE sessions SET title = ${sqlQuote(newTitle)} WHERE id = ${sqlQuote(sessionId)}`,
-        ),
-      );
-      wrote = true;
+      try {
+        await toPromise(
+          fs.sqliteExec(
+            dbPath,
+            `UPDATE sessions SET ${titleCol} = ${sqlQuote(newTitle)} WHERE id = ${sqlQuote(sessionId)}`,
+          ),
+        );
+        wrote = true;
+      } catch (e) {
+        authoritativeDbUpdateFailed = true;
+        errors.push(`${dbName}: ${e?.message || e}`);
+      }
     } catch (e) {
       errors.push(`${dbName}: ${e?.message || e}`);
     }
+  }
+
+  if (authoritativeDbUpdateFailed) {
+    const detail = errors.length ? errors.join("; ") : "sessions UPDATE failed";
+    throw new Error(`Could not rename Copilot session: ${detail}`);
   }
 
   const stateDir = joinPath(copilotHome, "session-state", sessionId);
