@@ -355,11 +355,18 @@ def list_opencode(cwd: str) -> list[dict]:
             required = {"id", "directory", "time_updated"}
             if not required.issubset(cols):
                 return []
-            title_col = "title" if "title" in cols else "''"
-            rows = db.execute(
-                f"SELECT id, {title_col}, time_updated FROM session "
-                "WHERE directory = ? ORDER BY time_updated DESC LIMIT ?",
-                (cwd, PER_GROUP_CAP),
+            rows = (
+                db.execute(
+                    "SELECT id, title, time_updated FROM session "
+                    "WHERE directory = ? ORDER BY time_updated DESC LIMIT ?",
+                    (cwd, PER_GROUP_CAP),
+                )
+                if "title" in cols
+                else db.execute(
+                    "SELECT id, '' AS title, time_updated FROM session "
+                    "WHERE directory = ? ORDER BY time_updated DESC LIMIT ?",
+                    (cwd, PER_GROUP_CAP),
+                )
             )
             out: list[dict] = []
             for sid, title, updated in rows:
