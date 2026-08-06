@@ -12,7 +12,8 @@ import {
   setShowArchived,
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
-import { filterGroups, listAll, pickStartCli } from "@/lib/sessions/index";
+import { filterGroups, listAll } from "@/lib/sessions/index";
+import { buildStartActionModel, pickStartCli } from "@/lib/sessions/start-cli";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
 import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
@@ -54,8 +55,10 @@ export class SessionsPanel {
     this.editDraft = "";
     this.editError = null;
     this.confirmingDeleteKey = null;
+    this.startMenuOpen = false;
     this._pendingFocus = null;
     this._lastEditedKey = null;
+    this._startMenuDocListener = null;
   }
 
   clearEditState() {
@@ -67,6 +70,67 @@ export class SessionsPanel {
   clearInlineModes() {
     this.clearEditState();
     this.confirmingDeleteKey = null;
+    this.closeStartMenu();
+  }
+
+  closeStartMenu() {
+    this.startMenuOpen = false;
+    this._detachStartMenuListeners();
+  }
+
+  _detachStartMenuListeners() {
+    if (this._startMenuDocListener) {
+      document.removeEventListener("mousedown", this._startMenuDocListener, true);
+      document.removeEventListener("keydown", this._startMenuDocListener, true);
+      this._startMenuDocListener = null;
+    }
+  }
+
+  _attachStartMenuListeners() {
+    this._detachStartMenuListeners();
+    const onDoc = (e) => {
+      if (!this.startMenuOpen) return;
+      if (e.type === "keydown" && e.key === "Escape") {
+        e.preventDefault();
+        this.closeStartMenu();
+        this.render();
+        return;
+      }
+      if (e.type === "mousedown") {
+        const shell = this.root.querySelector("[data-start-split]");
+        if (shell && shell.contains(e.target)) return;
+        this.closeStartMenu();
+        this.render();
+      }
+    };
+    this._startMenuDocListener = onDoc;
+    document.addEventListener("mousedown", onDoc, true);
+    document.addEventListener("keydown", onDoc, true);
+  }
+
+  toggleStartMenu() {
+    if (this.startMenuOpen) {
+      this.closeStartMenu();
+      this.render();
+      return;
+    }
+    this.clearEditState();
+    this.confirmingDeleteKey = null;
+    this.startMenuOpen = true;
+    this._attachStartMenuListeners();
+    this.render();
+  }
+
+  async preferCli(id) {
+    if (!id || id === this.preferredCli) {
+      this.closeStartMenu();
+      this.render();
+      return;
+    }
+    this.preferredCli = id;
+    await setPreferredCli(id);
+    this.closeStartMenu();
+    this.render();
   }
 
   async start() {
@@ -162,10 +226,20 @@ export class SessionsPanel {
   }
 
   async startNew() {
+    if (this.startMenuOpen) {
+      this.closeStartMenu();
+      this.render();
+    }
     const cli = pickStartCli(this.preferredCli, this.installed);
     if (!cli) return;
     try {
       await openStartTerminal(cli);
+      // Heal stored preference when pick fell back (e.g. preferred CLI uninstalled).
+      if (cli !== this.preferredCli) {
+        this.preferredCli = cli;
+        await setPreferredCli(cli);
+        this.render();
+      }
     } catch (err) {
       try {
         await muxy.notifications.notify({
@@ -189,6 +263,7 @@ export class SessionsPanel {
   beginRename(session) {
     if (this.busyId) return;
     const key = sessionRowKey(session.cli, session.id);
+    this.closeStartMenu();
     this.confirmingDeleteKey = null;
     this.editingKey = key;
     this.editDraft = session.title ?? "";
@@ -207,6 +282,7 @@ export class SessionsPanel {
   beginDelete(session) {
     if (this.busyId) return;
     const key = sessionRowKey(session.cli, session.id);
+    this.closeStartMenu();
     this.clearEditState();
     this.confirmingDeleteKey = key;
     this._lastEditedKey = key;
@@ -825,30 +901,106 @@ export class SessionsPanel {
 
   footer() {
     const canStart = this.installed.length > 0;
-    const startCli = pickStartCli(this.preferredCli, this.installed);
-    const label = startCli
-      ? `Start new ${this.installed.find((p) => p.id === startCli)?.displayName ?? startCli}`
-      : "Start new session";
+    const model = buildStartActionModel(this.preferredCli, this.installed);
+
+    if (!canStart || !model.showMenu) {
+      return h(
+        "div",
+        { class: "border-t border-border px-2.5 py-2" },
+        h(
+          "button",
+          {
+            type: "button",
+            disabled: !canStart,
+            class:
+              "flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border bg-surface text-[12px] text-foreground outline-none hover:bg-accent disabled:opacity-50",
+            onclick: () => this.startNew(),
+          },
+          icon("sparkles", 12),
+          model.label,
+        ),
+      );
+    }
+
+    const menuOpen = this.startMenuOpen;
 
     return h(
       "div",
-      { class: "border-t border-border px-2.5 py-2" },
+      { class: "relative border-t border-border px-2.5 py-2" },
       h(
-        "button",
+        "div",
         {
-          type: "button",
-          disabled: !canStart,
-          class:
-            "flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border bg-surface text-[12px] text-foreground outline-none hover:bg-accent disabled:opacity-50",
-          onclick: () => this.startNew(),
+          class: "relative flex h-7 w-full",
+          role: "group",
+          "aria-label": "Start new session",
+          "data-start-split": "true",
         },
-        icon("sparkles", 12),
-        label,
+        h(
+          "button",
+          {
+            type: "button",
+            class:
+              "flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md border border-border border-r-0 bg-surface text-[12px] text-foreground outline-none hover:bg-accent",
+            onclick: () => this.startNew(),
+          },
+          icon("sparkles", 12),
+          h("span", { class: "truncate" }, model.label),
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            "aria-label": "Choose preferred CLI",
+            "aria-haspopup": "menu",
+            "aria-expanded": menuOpen ? "true" : "false",
+            class:
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-r-md border border-border bg-surface text-foreground outline-none hover:bg-accent",
+            onclick: (e) => {
+              e.stopPropagation();
+              this.toggleStartMenu();
+            },
+          },
+          icon("chevron", 12, menuOpen ? "rotate-180" : ""),
+        ),
+        menuOpen
+          ? h(
+              "div",
+              {
+                role: "menu",
+                "aria-label": "Preferred AI CLI",
+                class:
+                  "absolute bottom-full left-0 right-0 z-20 mb-1 overflow-hidden rounded-md border border-border bg-surface shadow-md",
+              },
+              ...model.items.map((item) =>
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    role: "menuitemradio",
+                    "aria-checked": item.selected ? "true" : "false",
+                    class: item.selected
+                      ? "flex w-full items-center gap-2 bg-accent px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent"
+                      : "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent",
+                    onclick: (e) => {
+                      e.stopPropagation();
+                      this.preferCli(item.id);
+                    },
+                  },
+                  providerIcon(item.id, 14, "shrink-0 text-muted-foreground"),
+                  h("span", { class: "min-w-0 flex-1 truncate" }, item.displayName),
+                  item.selected
+                    ? icon("check", 12, "shrink-0 text-primary")
+                    : h("span", { class: "w-3 shrink-0" }),
+                ),
+              ),
+            )
+          : null,
       ),
     );
   }
 
   emptyState(message, showStart = false) {
+    const model = buildStartActionModel(this.preferredCli, this.installed);
     return h(
       "div",
       {
@@ -865,7 +1017,7 @@ export class SessionsPanel {
                 "h-7 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground",
               onclick: () => this.startNew(),
             },
-            "Start new session",
+            model.label,
           )
         : null,
     );

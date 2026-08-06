@@ -12,6 +12,13 @@ import {
   findSessionByKey,
   sessionRowKey,
 } from "../src/lib/sessions/inline-rename.js";
+import {
+  buildStartActionModel,
+  pickStartCli,
+  showStartCliMenu,
+  startButtonLabel,
+  startMenuItems,
+} from "../src/lib/sessions/start-cli.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -211,5 +218,66 @@ describe("inline-rename helpers", () => {
     const groups = [{ sessions: [{ cli: "cursor", id: "x", title: "T" }] }];
     assert.equal(findSessionByKey("cursor:x", groups)?.title, "T");
     assert.equal(findSessionByKey("cursor:y", groups), null);
+  });
+});
+
+describe("start-cli helpers", () => {
+  const multi = [
+    { id: "claude", displayName: "Claude" },
+    { id: "codex", displayName: "Codex" },
+    { id: "grok", displayName: "Grok" },
+  ];
+  const single = [{ id: "codex", displayName: "Codex" }];
+
+  it("pickStartCli prefers stored when installed", () => {
+    assert.equal(pickStartCli("codex", multi), "codex");
+  });
+
+  it("pickStartCli falls back to START_PREFERENCE order", () => {
+    assert.equal(pickStartCli("missing", multi), "grok");
+    assert.equal(pickStartCli(null, multi), "grok");
+    assert.equal(pickStartCli("grok", single), "codex");
+  });
+
+  it("pickStartCli returns null when nothing installed", () => {
+    assert.equal(pickStartCli("grok", []), null);
+  });
+
+  it("showStartCliMenu only when two or more CLIs", () => {
+    assert.equal(showStartCliMenu([]), false);
+    assert.equal(showStartCliMenu(single), false);
+    assert.equal(showStartCliMenu(multi), true);
+  });
+
+  it("startButtonLabel includes display name", () => {
+    assert.equal(startButtonLabel("claude", multi), "Start new Claude");
+    assert.equal(startButtonLabel(null, multi), "Start new session");
+  });
+
+  it("startMenuItems orders by START_PREFERENCE and marks selected", () => {
+    const items = startMenuItems("codex", multi);
+    assert.deepEqual(
+      items.map((i) => i.id),
+      ["grok", "claude", "codex"],
+    );
+    assert.equal(items.find((i) => i.id === "codex")?.selected, true);
+    assert.equal(items.filter((i) => i.selected).length, 1);
+  });
+
+  it("startMenuItems selects fallback when preferred uninstalled", () => {
+    const items = startMenuItems("cursor", multi);
+    assert.equal(items.find((i) => i.id === "grok")?.selected, true);
+  });
+
+  it("buildStartActionModel combines fields", () => {
+    const model = buildStartActionModel("claude", multi);
+    assert.equal(model.startCli, "claude");
+    assert.equal(model.label, "Start new Claude");
+    assert.equal(model.showMenu, true);
+    assert.equal(model.items.length, 3);
+
+    const alone = buildStartActionModel("codex", single);
+    assert.equal(alone.showMenu, false);
+    assert.equal(alone.label, "Start new Codex");
   });
 });
