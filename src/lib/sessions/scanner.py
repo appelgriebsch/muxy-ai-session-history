@@ -336,9 +336,7 @@ def list_codex(cwd: str) -> list[dict]:
 def opencode_home() -> Path:
     configured = os.environ.get("OPENCODE_DATA_DIR")
     if configured:
-        first = configured.split(",")[0].strip()
-        if first:
-            return Path(first).expanduser()
+        return Path(configured).expanduser()
     xdg = os.environ.get("XDG_DATA_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
     return base / "opencode"
