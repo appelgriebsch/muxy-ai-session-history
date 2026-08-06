@@ -17,12 +17,23 @@ import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
 import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
 import { providerById } from "@/lib/sessions/providers";
+import {
+  editTargetStillPresent,
+  evaluateRenameDraft,
+  findSessionByKey,
+  sessionRowKey,
+} from "@/lib/sessions/inline-rename";
 
 function basenamePath(path) {
   if (!path || typeof path !== "string") return null;
   const norm = path.replace(/[\\/]+$/, "");
   const parts = norm.split(/[\\/]/);
   return parts[parts.length - 1] || null;
+}
+
+/** Attribute-safe form of sessionRowKey for data-* selectors (avoid CSS.escape). */
+function dataKeyAttr(key) {
+  return String(key).replace(/:/g, "__");
 }
 
 export class SessionsPanel {
@@ -39,6 +50,23 @@ export class SessionsPanel {
     this.showArchived = false;
     this.archivedSet = new Set();
     this.pythonMissing = false;
+    this.editingKey = null;
+    this.editDraft = "";
+    this.editError = null;
+    this.confirmingDeleteKey = null;
+    this._pendingFocus = null;
+    this._lastEditedKey = null;
+  }
+
+  clearEditState() {
+    this.editingKey = null;
+    this.editDraft = "";
+    this.editError = null;
+  }
+
+  clearInlineModes() {
+    this.clearEditState();
+    this.confirmingDeleteKey = null;
   }
 
   async start() {
@@ -55,6 +83,8 @@ export class SessionsPanel {
   }
 
   async refresh() {
+    this.clearInlineModes();
+    this._pendingFocus = null;
     this.loading = true;
     this.error = null;
     this.render();
@@ -74,11 +104,21 @@ export class SessionsPanel {
         this.filter = "all";
         await setListFilter("all");
       }
+      if (this.editingKey && !editTargetStillPresent(this.editingKey, this.groups)) {
+        this.clearEditState();
+      }
+      if (
+        this.confirmingDeleteKey &&
+        !editTargetStillPresent(this.confirmingDeleteKey, this.groups)
+      ) {
+        this.confirmingDeleteKey = null;
+      }
     } catch (err) {
       this.error = err?.message || String(err);
       this.installed = [];
       this.groups = [];
       this.pythonMissing = false;
+      this.clearInlineModes();
     } finally {
       this.loading = false;
       this.render();
@@ -86,13 +126,19 @@ export class SessionsPanel {
   }
 
   async setFilter(filter) {
+    this.clearInlineModes();
+    this._pendingFocus = null;
     this.filter = filter;
     await setListFilter(filter);
     this.render();
   }
 
   async resume(session) {
-    this.busyId = `${session.cli}:${session.id}`;
+    if (this.editingKey || this.confirmingDeleteKey) {
+      this.clearInlineModes();
+      this._pendingFocus = null;
+    }
+    this.busyId = sessionRowKey(session.cli, session.id);
     this.render();
     try {
       await openResumeTerminal(session.cli, session.id);
@@ -133,39 +179,112 @@ export class SessionsPanel {
   }
 
   async toggleShowArchived() {
+    this.clearInlineModes();
+    this._pendingFocus = null;
     this.showArchived = !this.showArchived;
     await setShowArchived(this.showArchived);
     this.render();
   }
 
-  async rename(session) {
-    const prompt = muxy.ui?.prompt;
-    if (typeof prompt !== "function") {
+  beginRename(session) {
+    if (this.busyId) return;
+    const key = sessionRowKey(session.cli, session.id);
+    this.confirmingDeleteKey = null;
+    this.editingKey = key;
+    this.editDraft = session.title ?? "";
+    this.editError = null;
+    this._pendingFocus = "input";
+    this.render();
+  }
+
+  cancelRename() {
+    if (this.editingKey) this._lastEditedKey = this.editingKey;
+    this.clearEditState();
+    this._pendingFocus = "row";
+    this.render();
+  }
+
+  beginDelete(session) {
+    if (this.busyId) return;
+    const key = sessionRowKey(session.cli, session.id);
+    this.clearEditState();
+    this.confirmingDeleteKey = key;
+    this._lastEditedKey = key;
+    this._pendingFocus = "delete-confirm";
+    this.render();
+  }
+
+  cancelDelete() {
+    if (this.confirmingDeleteKey) this._lastEditedKey = this.confirmingDeleteKey;
+    this.confirmingDeleteKey = null;
+    this._pendingFocus = "row";
+    this.render();
+  }
+
+  async confirmDelete() {
+    if (!this.confirmingDeleteKey || this.busyId) return;
+    const key = this.confirmingDeleteKey;
+    const session = findSessionByKey(key, this.groups);
+    if (!session) {
+      this.confirmingDeleteKey = null;
+      this.render();
+      return;
+    }
+    this.busyId = key;
+    this.render();
+    try {
+      await deleteSession(session.cli, session.id, this.cwd);
+      this._lastEditedKey = key;
+      this.confirmingDeleteKey = null;
+      this.busyId = null;
+      await this.refresh();
+    } catch (err) {
       try {
         await muxy.notifications.notify({
-          title: "Could not rename session",
-          body: "Prompt UI is not available in this host.",
+          title: "Could not delete session",
+          body: err?.message || String(err),
         });
       } catch {
         /* ignore */
       }
+      this.busyId = null;
+      this._pendingFocus = "delete-confirm";
+      this.render();
+    }
+  }
+
+  async confirmRename() {
+    if (!this.editingKey || this.busyId) return;
+    const key = this.editingKey;
+    const session = findSessionByKey(key, this.groups);
+    if (!session) {
+      this.clearEditState();
+      this.render();
       return;
     }
-    let newTitle;
-    try {
-      newTitle = await prompt.call(muxy.ui, "Rename session", "Enter a new title:", session.title);
-    } catch {
+    const result = evaluateRenameDraft(session.title, this.editDraft);
+    if (result.action === "empty") {
+      this.editError = null;
+      this._pendingFocus = "input";
+      this.render();
       return;
     }
-    if (newTitle === null || newTitle === undefined) return;
-    const trimmed = String(newTitle).trim();
-    if (!trimmed || trimmed === session.title) return;
-    const key = `${session.cli}:${session.id}`;
+    if (result.action === "unchanged") {
+      this.cancelRename();
+      return;
+    }
+
     this.busyId = key;
+    this.editError = null;
     this.render();
     try {
-      await renameSession(session.cli, session.id, trimmed);
+      await renameSession(session.cli, session.id, result.title);
+      this._lastEditedKey = key;
+      this.clearEditState();
+      this.busyId = null;
       await this.refresh();
+      this._pendingFocus = "row";
+      this.render();
     } catch (err) {
       try {
         await muxy.notifications.notify({
@@ -175,15 +294,16 @@ export class SessionsPanel {
       } catch {
         /* ignore */
       }
-    } finally {
       this.busyId = null;
+      this._pendingFocus = "input";
       this.render();
     }
   }
 
   async archive(session) {
+    this.clearInlineModes();
     const newArchived = !session.archived;
-    const key = `${session.cli}:${session.id}`;
+    const key = sessionRowKey(session.cli, session.id);
     this.busyId = key;
     this.render();
     try {
@@ -206,53 +326,40 @@ export class SessionsPanel {
     }
   }
 
-  async delete(session) {
-    const confirm = muxy.ui?.confirm;
-    if (typeof confirm !== "function") {
-      try {
-        await muxy.notifications.notify({
-          title: "Could not delete session",
-          body: "Confirm UI is not available in this host.",
-        });
-      } catch {
-        /* ignore */
-      }
-      return;
-    }
-    let confirmed = false;
-    try {
-      confirmed = await confirm.call(
-        muxy.ui,
-        `Delete session "${session.title}"? This cannot be undone.`,
-      );
-    } catch {
-      return;
-    }
-    if (!confirmed) return;
-    const key = `${session.cli}:${session.id}`;
-    this.busyId = key;
-    this.render();
-    try {
-      await deleteSession(session.cli, session.id, this.cwd);
-      await this.refresh();
-    } catch (err) {
-      try {
-        await muxy.notifications.notify({
-          title: "Could not delete session",
-          body: err?.message || String(err),
-        });
-      } catch {
-        /* ignore */
-      }
-    } finally {
-      this.busyId = null;
-      this.render();
-    }
-  }
-
   render() {
     clear(this.root);
     this.root.appendChild(this.view());
+    this._applyPendingFocus();
+  }
+
+  _applyPendingFocus() {
+    const intent = this._pendingFocus;
+    this._pendingFocus = null;
+    if (intent === "input" && this.editingKey) {
+      const input = this.root.querySelector(
+        `input[data-edit-key="${dataKeyAttr(this.editingKey)}"]`,
+      );
+      if (input) {
+        input.focus();
+        input.select();
+      }
+      return;
+    }
+    if (intent === "delete-confirm" && this.confirmingDeleteKey) {
+      const btn = this.root.querySelector(
+        `button[data-delete-confirm="${dataKeyAttr(this.confirmingDeleteKey)}"]`,
+      );
+      btn?.focus();
+      return;
+    }
+    if (intent === "row") {
+      const key = this._lastEditedKey;
+      if (!key) return;
+      const btn = this.root.querySelector(
+        `button[data-session-key="${dataKeyAttr(key)}"]`,
+      );
+      btn?.focus();
+    }
   }
 
   view() {
@@ -415,53 +522,261 @@ export class SessionsPanel {
   }
 
   row(session) {
-    const key = `${session.cli}:${session.id}`;
+    const key = sessionRowKey(session.cli, session.id);
+    const dataKey = dataKeyAttr(key);
     const busy = this.busyId === key;
+    const isEditing = this.editingKey === key;
+    const isConfirmingDelete = this.confirmingDeleteKey === key;
     const cwdBase = basenamePath(session.cwd);
     const place = [cwdBase, session.branch].filter(Boolean).join(" · ");
     const secondary = [relativeTime(session.updatedAt), place].filter(Boolean).join(" · ");
 
     const caps = providerById(session.cli)?.capabilities ?? {};
 
+    if (isConfirmingDelete) {
+      return h(
+        "div",
+        {
+          class: `group relative flex w-full items-stretch rounded-md bg-destructive/10${session.archived ? " opacity-60" : ""}`,
+          "aria-busy": busy ? "true" : "false",
+        },
+        h(
+          "div",
+          {
+            class: "flex min-w-0 flex-1 flex-col items-start gap-0.5 px-2.5 py-1.5",
+            role: "group",
+            "aria-label": "Confirm delete session",
+          },
+          h(
+            "div",
+            { class: "flex w-full items-center gap-2" },
+            providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
+            h(
+              "span",
+              { class: "min-w-0 flex-1 truncate text-[12px] text-foreground" },
+              session.title,
+            ),
+            busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
+          ),
+          h(
+            "span",
+            { class: "w-full truncate pl-5 text-[10px] text-destructive" },
+            "Delete permanently? This cannot be undone.",
+          ),
+        ),
+        h(
+          "div",
+          { class: "flex items-center gap-0.5 pr-1.5" },
+          h(
+            "button",
+            {
+              type: "button",
+              title: "Confirm delete",
+              "aria-label": "Confirm delete",
+              "data-delete-confirm": dataKey,
+              disabled: busy,
+              class:
+                "flex min-h-6 min-w-6 items-center justify-center rounded p-0.5 text-destructive outline-none hover:bg-accent disabled:opacity-40",
+              onmousedown: (e) => e.preventDefault(),
+              onkeydown: (e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  this.cancelDelete();
+                }
+              },
+              onclick: (e) => {
+                e.stopPropagation();
+                this.confirmDelete();
+              },
+            },
+            icon("check", 12),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              title: "Cancel delete",
+              "aria-label": "Cancel delete",
+              disabled: busy,
+              class:
+                "flex min-h-6 min-w-6 items-center justify-center rounded p-0.5 text-muted-foreground outline-none hover:text-foreground hover:bg-accent disabled:opacity-40",
+              onmousedown: (e) => e.preventDefault(),
+              onkeydown: (e) => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  this.cancelDelete();
+                }
+              },
+              onclick: (e) => {
+                e.stopPropagation();
+                this.cancelDelete();
+              },
+            },
+            icon("x", 12),
+          ),
+        ),
+      );
+    }
+
+    if (isEditing) {
+      const inputAttrs = {
+        type: "text",
+        value: this.editDraft,
+        "data-edit-key": dataKey,
+        "aria-label": "Session title",
+        autocomplete: "off",
+        disabled: busy,
+        class:
+          "h-6 w-full min-w-0 flex-1 rounded border border-border bg-background px-1.5 text-[12px] text-foreground outline-none focus:border-primary focus:ring-1 focus:ring-primary disabled:opacity-60",
+        oninput: (e) => {
+          this.editDraft = e.target.value;
+        },
+        onkeydown: (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            this.confirmRename();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            this.cancelRename();
+          }
+        },
+      };
+
+      return h(
+        "div",
+        {
+          class: `group relative flex w-full items-stretch rounded-md bg-accent/40${session.archived ? " opacity-60" : ""}`,
+          "aria-busy": busy ? "true" : "false",
+        },
+        h(
+          "div",
+          {
+            class: "flex min-w-0 flex-1 flex-col items-start gap-0.5 px-2.5 py-1.5",
+            role: "group",
+            "aria-label": "Rename session",
+          },
+          h(
+            "div",
+            { class: "flex w-full items-center gap-2" },
+            providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
+            session.archived
+              ? icon("archive", 10, "shrink-0 text-muted-foreground")
+              : null,
+            h("input", inputAttrs),
+            busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
+          ),
+          secondary
+            ? h(
+                "span",
+                { class: "w-full truncate pl-5 font-mono text-[10px] text-muted-foreground" },
+                secondary,
+              )
+            : null,
+        ),
+        h(
+          "div",
+          { class: "flex items-center gap-0.5 pr-1.5" },
+          h(
+            "button",
+            {
+              type: "button",
+              title: "Confirm rename",
+              "aria-label": "Confirm rename",
+              disabled: busy,
+              class:
+                "flex min-h-6 min-w-6 items-center justify-center rounded p-0.5 text-primary outline-none hover:bg-accent disabled:opacity-40",
+              onmousedown: (e) => e.preventDefault(),
+              onclick: (e) => {
+                e.stopPropagation();
+                this.confirmRename();
+              },
+            },
+            icon("check", 12),
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              title: "Cancel rename",
+              "aria-label": "Cancel rename",
+              disabled: busy,
+              class:
+                "flex min-h-6 min-w-6 items-center justify-center rounded p-0.5 text-muted-foreground outline-none hover:text-foreground hover:bg-accent disabled:opacity-40",
+              onmousedown: (e) => e.preventDefault(),
+              onclick: (e) => {
+                e.stopPropagation();
+                this.cancelRename();
+              },
+            },
+            icon("x", 12),
+          ),
+        ),
+      );
+    }
+
     const actionButtons = [];
     if (caps.rename) {
       actionButtons.push(
-        h("button", {
-          type: "button",
-          title: "Rename",
-          disabled: busy,
-          class:
-            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
-          onclick: (e) => { e.stopPropagation(); this.rename(session); },
-        }, icon("pencil", 11)),
+        h(
+          "button",
+          {
+            type: "button",
+            title: "Rename",
+            "aria-label": "Rename",
+            disabled: busy,
+            class:
+              "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
+            onclick: (e) => {
+              e.stopPropagation();
+              this.beginRename(session);
+            },
+          },
+          icon("pencil", 11),
+        ),
       );
     }
     if (caps.archive) {
       actionButtons.push(
-        h("button", {
-          type: "button",
-          title: session.archived ? "Unarchive" : "Archive",
-          disabled: busy,
-          class:
-            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
-          onclick: (e) => { e.stopPropagation(); this.archive(session); },
-        }, icon(session.archived ? "archive-restore" : "archive", 11)),
+        h(
+          "button",
+          {
+            type: "button",
+            title: session.archived ? "Unarchive" : "Archive",
+            "aria-label": session.archived ? "Unarchive" : "Archive",
+            disabled: busy,
+            class:
+              "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
+            onclick: (e) => {
+              e.stopPropagation();
+              this.archive(session);
+            },
+          },
+          icon(session.archived ? "archive-restore" : "archive", 11),
+        ),
       );
     }
     if (caps.delete) {
       actionButtons.push(
-        h("button", {
-          type: "button",
-          title: "Delete",
-          disabled: busy,
-          class:
-            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-accent outline-none disabled:opacity-40",
-          onclick: (e) => { e.stopPropagation(); this.delete(session); },
-        }, icon("trash", 11)),
+        h(
+          "button",
+          {
+            type: "button",
+            title: "Delete",
+            "aria-label": "Delete",
+            disabled: busy,
+            class:
+              "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-destructive hover:bg-accent outline-none disabled:opacity-40",
+            onclick: (e) => {
+              e.stopPropagation();
+              this.beginDelete(session);
+            },
+          },
+          icon("trash", 11),
+        ),
       );
     }
 
-    const wrapper = h(
+    return h(
       "div",
       {
         class: `group relative flex w-full items-stretch rounded-md hover:bg-accent${session.archived ? " opacity-60" : ""}`,
@@ -471,6 +786,7 @@ export class SessionsPanel {
         {
           type: "button",
           disabled: busy,
+          "data-session-key": dataKey,
           class:
             "flex min-w-0 flex-1 flex-col items-start gap-0.5 px-2.5 py-1.5 text-left outline-none disabled:opacity-60",
           onclick: () => this.resume(session),
@@ -505,7 +821,6 @@ export class SessionsPanel {
           )
         : null,
     );
-    return wrapper;
   }
 
   footer() {

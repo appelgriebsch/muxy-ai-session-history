@@ -9,7 +9,7 @@ Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cur
 - **Multi-provider list** — detects installed CLIs; default **All** view groups sessions by tool
 - **Filter chips** — Muxy provider icons + labels; narrow to one provider
 - **Readable titles** — Copilot uses `data.db` / `workspace.yaml` / first user message (never bare UUID alone)
-- **Rename / archive / delete** — capability-gated per CLI; **archive is Muxy-only** (does not flip native Codex `archived`)
+- **Rename / archive / delete** — capability-gated per CLI; rename and delete confirm are **inline in the panel** (no host prompt/confirm UI); **archive is Muxy-only** (does not flip native Codex `archived`)
 - **Resume** — opens a new terminal in the active worktree and runs the CLI’s resume command
 - **Start new** — launches preferred / first-available CLI without resume
 - **Palette** — **AI Sessions: Resume…** searchable modal across all installed providers

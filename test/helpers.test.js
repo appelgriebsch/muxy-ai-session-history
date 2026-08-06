@@ -6,6 +6,12 @@ import { buildResumeCommand, buildStartCommand } from "../src/lib/resume.js";
 import { buildGroups, filterGroups, groupByDate } from "../src/lib/sessions/group.js";
 import { dateGroup, relativeTime } from "../src/lib/time.js";
 import { PROVIDERS, providerById } from "../src/lib/sessions/providers.js";
+import {
+  editTargetStillPresent,
+  evaluateRenameDraft,
+  findSessionByKey,
+  sessionRowKey,
+} from "../src/lib/sessions/inline-rename.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -165,5 +171,45 @@ describe("providers capabilities", () => {
     for (const p of PROVIDERS) {
       assert.equal(p.capabilities.archive, true);
     }
+  });
+});
+
+describe("inline-rename helpers", () => {
+  it("sessionRowKey joins cli and id", () => {
+    assert.equal(sessionRowKey("grok", "abc"), "grok:abc");
+  });
+
+  it("evaluateRenameDraft rejects empty and whitespace", () => {
+    assert.deepEqual(evaluateRenameDraft("Old", ""), { action: "empty" });
+    assert.deepEqual(evaluateRenameDraft("Old", "   "), { action: "empty" });
+    assert.deepEqual(evaluateRenameDraft("Old", null), { action: "empty" });
+  });
+
+  it("evaluateRenameDraft treats trimmed equal titles as unchanged", () => {
+    assert.deepEqual(evaluateRenameDraft("Hello", "Hello"), { action: "unchanged" });
+    assert.deepEqual(evaluateRenameDraft("Hello", "  Hello  "), { action: "unchanged" });
+  });
+
+  it("evaluateRenameDraft commits trimmed new titles", () => {
+    assert.deepEqual(evaluateRenameDraft("Old", "  New title  "), {
+      action: "commit",
+      title: "New title",
+    });
+  });
+
+  it("editTargetStillPresent finds keys in groups", () => {
+    const groups = [
+      { sessions: [{ cli: "grok", id: "1" }] },
+      { sessions: [{ cli: "codex", id: "2" }] },
+    ];
+    assert.equal(editTargetStillPresent("grok:1", groups), true);
+    assert.equal(editTargetStillPresent("codex:9", groups), false);
+    assert.equal(editTargetStillPresent(null, groups), false);
+  });
+
+  it("findSessionByKey returns the matching session", () => {
+    const groups = [{ sessions: [{ cli: "cursor", id: "x", title: "T" }] }];
+    assert.equal(findSessionByKey("cursor:x", groups)?.title, "T");
+    assert.equal(findSessionByKey("cursor:y", groups), null);
   });
 });
