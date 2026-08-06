@@ -73,15 +73,6 @@
         "tooltip": "AI Sessions",
         "command": "toggle-sessions"
       }
-    ],
-    "settings": [
-      {
-        "key": "preferredCli",
-        "title": "Preferred AI CLI for Start new",
-        "description": "Used when starting a fresh session. The panel filter is separate and stored in extension storage.",
-        "type": "string",
-        "defaultValue": "grok"
-      }
     ]
   }
 }
