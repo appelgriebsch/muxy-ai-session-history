@@ -1,5 +1,6 @@
 import { clear, h } from "@/lib/dom";
 import { icon } from "@/lib/icons";
+import { providerIcon } from "@/lib/provider-icons";
 import { activeCwd, shortPath } from "@/lib/cwd";
 import {
   getArchivedSessions,
@@ -17,6 +18,13 @@ import { groupByDate } from "@/lib/sessions/group";
 import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
 import { providerById } from "@/lib/sessions/providers";
 
+function basenamePath(path) {
+  if (!path || typeof path !== "string") return null;
+  const norm = path.replace(/[\\/]+$/, "");
+  const parts = norm.split(/[\\/]/);
+  return parts[parts.length - 1] || null;
+}
+
 export class SessionsPanel {
   constructor(root) {
     this.root = root;
@@ -30,6 +38,7 @@ export class SessionsPanel {
     this.busyId = null;
     this.showArchived = false;
     this.archivedSet = new Set();
+    this.pythonMissing = false;
   }
 
   async start() {
@@ -52,9 +61,15 @@ export class SessionsPanel {
     try {
       this.cwd = await activeCwd();
       this.archivedSet = await getArchivedSessions();
-      const { installed, groups } = await listAll(this.cwd, { archivedSet: this.archivedSet });
+      const { installed, groups, pythonMissing, errorsByCli } = await listAll(this.cwd, {
+        archivedSet: this.archivedSet,
+      });
       this.installed = installed;
       this.groups = groups;
+      this.pythonMissing = Boolean(pythonMissing);
+      if (this.pythonMissing && errorsByCli?._python) {
+        this.error = errorsByCli._python;
+      }
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
         this.filter = "all";
         await setListFilter("all");
@@ -63,6 +78,7 @@ export class SessionsPanel {
       this.error = err?.message || String(err);
       this.installed = [];
       this.groups = [];
+      this.pythonMissing = false;
     } finally {
       this.loading = false;
       this.render();
@@ -123,11 +139,26 @@ export class SessionsPanel {
   }
 
   async rename(session) {
-    const newTitle = await muxy.ui
-      ?.prompt?.("Rename session", "Enter a new title:", session.title)
-      .catch(() => null);
+    const prompt = muxy.ui?.prompt;
+    if (typeof prompt !== "function") {
+      try {
+        await muxy.notifications.notify({
+          title: "Could not rename session",
+          body: "Prompt UI is not available in this host.",
+        });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    let newTitle;
+    try {
+      newTitle = await prompt.call(muxy.ui, "Rename session", "Enter a new title:", session.title);
+    } catch {
+      return;
+    }
     if (newTitle === null || newTitle === undefined) return;
-    const trimmed = newTitle.trim();
+    const trimmed = String(newTitle).trim();
     if (!trimmed || trimmed === session.title) return;
     const key = `${session.cli}:${session.id}`;
     this.busyId = key;
@@ -136,8 +167,6 @@ export class SessionsPanel {
       await renameSession(session.cli, session.id, trimmed);
       await this.refresh();
     } catch (err) {
-      this.busyId = null;
-      this.render();
       try {
         await muxy.notifications.notify({
           title: "Could not rename session",
@@ -146,6 +175,9 @@ export class SessionsPanel {
       } catch {
         /* ignore */
       }
+    } finally {
+      this.busyId = null;
+      this.render();
     }
   }
 
@@ -175,9 +207,27 @@ export class SessionsPanel {
   }
 
   async delete(session) {
-    const confirmed = await muxy.ui
-      ?.confirm?.(`Delete session "${session.title}"? This cannot be undone.`)
-      .catch(() => false);
+    const confirm = muxy.ui?.confirm;
+    if (typeof confirm !== "function") {
+      try {
+        await muxy.notifications.notify({
+          title: "Could not delete session",
+          body: "Confirm UI is not available in this host.",
+        });
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    let confirmed = false;
+    try {
+      confirmed = await confirm.call(
+        muxy.ui,
+        `Delete session "${session.title}"? This cannot be undone.`,
+      );
+    } catch {
+      return;
+    }
     if (!confirmed) return;
     const key = `${session.cli}:${session.id}`;
     this.busyId = key;
@@ -186,8 +236,6 @@ export class SessionsPanel {
       await deleteSession(session.cli, session.id, this.cwd);
       await this.refresh();
     } catch (err) {
-      this.busyId = null;
-      this.render();
       try {
         await muxy.notifications.notify({
           title: "Could not delete session",
@@ -196,6 +244,9 @@ export class SessionsPanel {
       } catch {
         /* ignore */
       }
+    } finally {
+      this.busyId = null;
+      this.render();
     }
   }
 
@@ -244,8 +295,8 @@ export class SessionsPanel {
 
   toolbar() {
     const chips = [
-      { id: "all", label: "All" },
-      ...this.installed.map((p) => ({ id: p.id, label: p.displayName })),
+      { id: "all", label: "All", providerId: null },
+      ...this.installed.map((p) => ({ id: p.id, label: p.displayName, providerId: p.id })),
     ];
 
     const hasArchived = this.groups.some((g) => g.sessions.some((s) => s.archived));
@@ -258,12 +309,14 @@ export class SessionsPanel {
           "button",
           {
             type: "button",
+            "aria-pressed": this.filter === chip.id ? "true" : "false",
             class:
               this.filter === chip.id
-                ? "h-6 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none"
-                : "h-6 rounded-md border border-border bg-surface px-2 text-[11px] text-foreground outline-none hover:bg-accent",
+                ? "inline-flex h-6 items-center gap-1 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none"
+                : "inline-flex h-6 items-center gap-1 rounded-md border border-border bg-surface px-2 text-[11px] text-foreground outline-none hover:bg-accent",
             onclick: () => this.setFilter(chip.id),
           },
+          chip.providerId ? providerIcon(chip.providerId, 12) : null,
           chip.label,
         ),
       ),
@@ -286,7 +339,7 @@ export class SessionsPanel {
 
   groupedBody(groups) {
     if (!groups.length) {
-      return this.emptyState("No sessions for this folder", true);
+      return this.emptyState("No resumable sessions for this folder", true);
     }
     const errors = groups.filter((g) => g.error);
     const allSessions = groups
@@ -314,7 +367,7 @@ export class SessionsPanel {
       return this.emptyState(group.error);
     }
     if (!sessions?.length) {
-      return this.emptyState("No sessions for this folder", true);
+      return this.emptyState("No resumable sessions for this folder", true);
     }
     const dateGroups = groupByDate(sessions, dateGroup);
     return h(
@@ -364,10 +417,9 @@ export class SessionsPanel {
   row(session) {
     const key = `${session.cli}:${session.id}`;
     const busy = this.busyId === key;
-    const idShort = session.id.length > 8 ? session.id.slice(0, 8) : session.id;
-    const secondary = [relativeTime(session.updatedAt), idShort, session.branch]
-      .filter(Boolean)
-      .join(" · ");
+    const cwdBase = basenamePath(session.cwd);
+    const place = [cwdBase, session.branch].filter(Boolean).join(" · ");
+    const secondary = [relativeTime(session.updatedAt), place].filter(Boolean).join(" · ");
 
     const caps = providerById(session.cli)?.capabilities ?? {};
 
@@ -377,8 +429,9 @@ export class SessionsPanel {
         h("button", {
           type: "button",
           title: "Rename",
+          disabled: busy,
           class:
-            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none",
+            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
           onclick: (e) => { e.stopPropagation(); this.rename(session); },
         }, icon("pencil", 11)),
       );
@@ -388,8 +441,9 @@ export class SessionsPanel {
         h("button", {
           type: "button",
           title: session.archived ? "Unarchive" : "Archive",
+          disabled: busy,
           class:
-            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none",
+            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
           onclick: (e) => { e.stopPropagation(); this.archive(session); },
         }, icon(session.archived ? "archive-restore" : "archive", 11)),
       );
@@ -399,8 +453,9 @@ export class SessionsPanel {
         h("button", {
           type: "button",
           title: "Delete",
+          disabled: busy,
           class:
-            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-accent outline-none",
+            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-accent outline-none disabled:opacity-40",
           onclick: (e) => { e.stopPropagation(); this.delete(session); },
         }, icon("trash", 11)),
       );
@@ -423,6 +478,7 @@ export class SessionsPanel {
         h(
           "div",
           { class: "flex w-full items-center gap-2" },
+          providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
           session.archived
             ? icon("archive", 10, "shrink-0 text-muted-foreground")
             : null,
@@ -433,11 +489,13 @@ export class SessionsPanel {
           ),
           busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
         ),
-        h(
-          "span",
-          { class: "font-mono text-[10px] text-muted-foreground" },
-          secondary,
-        ),
+        secondary
+          ? h(
+              "span",
+              { class: "w-full truncate pl-5 font-mono text-[10px] text-muted-foreground" },
+              secondary,
+            )
+          : null,
       ),
       actionButtons.length
         ? h(

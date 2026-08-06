@@ -27,7 +27,7 @@ export const PROVIDERS = [
     displayName: "Copilot",
     binary: "copilot",
     binaries: ["copilot"],
-    capabilities: { rename: false, archive: true, delete: false },
+    capabilities: { rename: true, archive: true, delete: false },
   },
   {
     id: "cursor",

@@ -56,18 +56,15 @@ export async function deleteSession(cli, sessionId, cwd, opts = {}) {
 }
 
 /**
- * Archive or unarchive a session.
- * For codex, also updates the native DB via the Python manager script.
- * For all CLIs, the archived state is stored in muxy extension storage.
+ * Archive or unarchive a session (Muxy extension storage only).
+ * Does not flip native CLI flags (e.g. Codex threads.archived) so sessions
+ * remain listable and resumable from the CLI.
  * @param {string} cli
  * @param {string} sessionId
  * @param {boolean} archived
  * @param {{ exec?: Function }} [opts]
  */
-export async function archiveSession(cli, sessionId, archived, opts = {}) {
+export async function archiveSession(cli, sessionId, archived, _opts = {}) {
   if (!isSafeSessionId(sessionId)) throw new Error("Invalid session id");
-  if (cli === "codex") {
-    await runManager(["archive", cli, sessionId, archived ? "1" : "0"], opts);
-  }
   await setSessionArchived(cli, sessionId, archived);
 }

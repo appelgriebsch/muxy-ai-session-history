@@ -1,5 +1,5 @@
 import { buildGroups, filterGroups, flattenSessions } from "@/lib/sessions/group";
-import { listSessionsForCli } from "@/lib/sessions/scan";
+import { ensurePython3, listSessionsForCli } from "@/lib/sessions/scan";
 import { detectInstalled } from "@/lib/sessions/which";
 import { START_PREFERENCE, providerById } from "@/lib/sessions/providers";
 
@@ -8,11 +8,12 @@ const GLOBAL_CAP = 80;
 /**
  * Load all sessions for installed CLIs at cwd.
  * @param {string} cwd
- * @param {{ archivedSet?: Set<string> }} [opts]
- * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli }>}
+ * @param {{ archivedSet?: Set<string>, exec?: Function }} [opts]
+ * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli, pythonMissing?: boolean }>}
  */
 export async function listAll(cwd, opts = {}) {
   const { archivedSet } = opts;
+  const exec = opts.exec ?? ((argv, options) => muxy.exec(argv, options));
   const installed = await detectInstalled();
   const sessionsByCli = {};
   const errorsByCli = {};
@@ -21,9 +22,23 @@ export async function listAll(cwd, opts = {}) {
     return { installed, groups: [], sessionsByCli, errorsByCli };
   }
 
+  const hasPython = await ensurePython3(exec);
+  if (!hasPython) {
+    return {
+      installed,
+      groups: [],
+      sessionsByCli,
+      errorsByCli: {
+        _python:
+          "Python 3 is required to read CLI session stores. Install python3 (Xcode CLT or python.org) and refresh.",
+      },
+      pythonMissing: true,
+    };
+  }
+
   const results = await Promise.allSettled(
     installed.map(async (provider) => {
-      const sessions = await listSessionsForCli(provider.id, cwd, { archivedSet });
+      const sessions = await listSessionsForCli(provider.id, cwd, { archivedSet, exec });
       return { id: provider.id, sessions };
     }),
   );

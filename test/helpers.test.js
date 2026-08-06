@@ -17,6 +17,14 @@ describe("sanitize", () => {
     assert.equal(isSafeSessionId("abc;rm -rf /"), false);
     assert.equal(isSafeSessionId("short"), false);
   });
+
+  it("rejects Copilot stub id prefixes", () => {
+    assert.equal(
+      isSafeSessionId("optimistic-chat-e4b462a3-3628-4aad-90ae-43b9c4fee922"),
+      false,
+    );
+    assert.equal(isSafeSessionId("pending-session-draft-abc123"), false);
+  });
 });
 
 describe("shell-quote", () => {
@@ -146,10 +154,16 @@ describe("providers capabilities", () => {
     assert.equal(codex.capabilities.delete, false);
   });
 
-  it("copilot only supports archive", () => {
+  it("copilot supports rename and archive but not delete", () => {
     const copilot = providerById("copilot");
-    assert.equal(copilot.capabilities.rename, false);
+    assert.equal(copilot.capabilities.rename, true);
     assert.equal(copilot.capabilities.archive, true);
     assert.equal(copilot.capabilities.delete, false);
+  });
+
+  it("archive is Muxy-only (all providers claim archive without native delete of store)", () => {
+    for (const p of PROVIDERS) {
+      assert.equal(p.capabilities.archive, true);
+    }
   });
 });
