@@ -19,6 +19,8 @@ import {
   startButtonLabel,
   startMenuItems,
 } from "../src/lib/sessions/start-cli.js";
+import * as manageApi from "../src/lib/sessions/manage.js";
+import * as storageApi from "../src/lib/storage.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -138,10 +140,10 @@ describe("providers capabilities", () => {
       assert.ok(p.capabilities, `${p.id} missing capabilities`);
       assert.equal(typeof p.capabilities.rename, "boolean", `${p.id}.capabilities.rename`);
       assert.equal(typeof p.capabilities.delete, "boolean", `${p.id}.capabilities.delete`);
-      assert.equal(
-        "archive" in p.capabilities,
-        false,
-        `${p.id} should not expose capabilities.archive`,
+      assert.deepEqual(
+        Object.keys(p.capabilities).sort(),
+        ["delete", "rename"],
+        `${p.id} capabilities keys`,
       );
     }
   });
@@ -168,6 +170,27 @@ describe("providers capabilities", () => {
     const copilot = providerById("copilot");
     assert.equal(copilot.capabilities.rename, true);
     assert.equal(copilot.capabilities.delete, false);
+  });
+
+  it("cursor supports rename and delete", () => {
+    const cursor = providerById("cursor");
+    assert.equal(cursor.capabilities.rename, true);
+    assert.equal(cursor.capabilities.delete, true);
+  });
+});
+
+
+describe("archive API surface removed", () => {
+  it("manage/storage no longer export archive APIs", () => {
+    assert.equal("archiveSession" in manageApi, false);
+    for (const name of [
+      "getArchivedSessions",
+      "setSessionArchived",
+      "getShowArchived",
+      "setShowArchived",
+    ]) {
+      assert.equal(name in storageApi, false, name);
+    }
   });
 });
 
