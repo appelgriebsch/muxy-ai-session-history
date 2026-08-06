@@ -52,6 +52,8 @@ export class SessionsPanel {
     this.archivedSet = new Set();
     this.hostToolsMissing = false;
     this.refreshing = false;
+    /** Monotonic epoch so overlapping listAll calls cannot clobber newer results. */
+    this._listEpoch = 0;
     this.editingKey = null;
     this.editDraft = "";
     this.editError = null;
@@ -168,25 +170,35 @@ export class SessionsPanel {
    * Soft re-list without blanking the panel (used after rename/delete/archive).
    */
   async relistQuiet() {
+    const epoch = ++this._listEpoch;
     try {
       this.archivedSet = await getArchivedSessions();
       const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd, {
         archivedSet: this.archivedSet,
       });
+      if (epoch !== this._listEpoch) return;
       this.installed = installed;
-      this.groups = groups;
-      this.hostToolsMissing = Boolean(hostToolsMissing);
-      if (this.hostToolsMissing && errorsByCli?._host) {
-        this.error = errorsByCli._host;
+      // Keep previous groups when host tools vanish mid-session (SWR).
+      if (hostToolsMissing && this.groups.length) {
+        this.hostToolsMissing = true;
+        this.error = errorsByCli?._host || this.error;
       } else {
-        this.error = null;
+        this.groups = groups;
+        this.hostToolsMissing = Boolean(hostToolsMissing);
+        if (this.hostToolsMissing && errorsByCli?._host) {
+          this.error = errorsByCli._host;
+        } else {
+          this.error = null;
+        }
       }
     } catch (err) {
+      if (epoch !== this._listEpoch) return;
       // Keep previous groups visible; surface via notification if possible.
+      this.error = err?.message || String(err);
       try {
         await muxy.notifications.notify({
           title: "Could not refresh sessions",
-          body: err?.message || String(err),
+          body: this.error,
         });
       } catch {
         /* ignore */
@@ -197,7 +209,8 @@ export class SessionsPanel {
   async refresh() {
     this.clearInlineModes();
     this._pendingFocus = null;
-    const hasData = this.groups.length > 0 || this.installed.length > 0;
+    const epoch = ++this._listEpoch;
+    const hasData = this.groups.length > 0;
     if (hasData) {
       this.refreshing = true;
     } else {
@@ -212,13 +225,19 @@ export class SessionsPanel {
       const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd, {
         archivedSet: this.archivedSet,
       });
+      if (epoch !== this._listEpoch) return;
       this.installed = installed;
-      this.groups = groups;
-      this.hostToolsMissing = Boolean(hostToolsMissing);
-      if (this.hostToolsMissing && errorsByCli?._host) {
-        this.error = errorsByCli._host;
+      if (hostToolsMissing && hasData) {
+        this.hostToolsMissing = true;
+        this.error = errorsByCli?._host || this.error;
       } else {
-        this.error = null;
+        this.groups = groups;
+        this.hostToolsMissing = Boolean(hostToolsMissing);
+        if (this.hostToolsMissing && errorsByCli?._host) {
+          this.error = errorsByCli._host;
+        } else {
+          this.error = null;
+        }
       }
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
         this.filter = "all";
@@ -240,6 +259,7 @@ export class SessionsPanel {
         this.confirmingDeleteKey = null;
       }
     } catch (err) {
+      if (epoch !== this._listEpoch) return;
       this.error = err?.message || String(err);
       // Hard failure only blanks when we had no prior data.
       if (!hasData) {
@@ -249,9 +269,11 @@ export class SessionsPanel {
       this.hostToolsMissing = false;
       this.clearInlineModes();
     } finally {
-      this.loading = false;
-      this.refreshing = false;
-      this.render();
+      if (epoch === this._listEpoch) {
+        this.loading = false;
+        this.refreshing = false;
+        this.render();
+      }
     }
   }
 
@@ -609,28 +631,8 @@ export class SessionsPanel {
     return h(
       "div",
       { class: "flex flex-col gap-1" },
-      this.refreshing
-        ? h(
-            "div",
-            {
-              role: "status",
-              "aria-live": "polite",
-              class: "px-2 py-1 text-[11px] text-muted-foreground",
-            },
-            "Refreshing…",
-          )
-        : null,
-      ...errors.map((g) =>
-        h(
-          "div",
-          {
-            role: "status",
-            "aria-live": "polite",
-            class: "px-2 py-1 text-[11px] text-muted-foreground",
-          },
-          `${g.displayName}: ${g.error}`,
-        ),
-      ),
+      this.statusBanner(),
+      ...errors.map((g) => this.statusLine(`${g.displayName}: ${g.error}`)),
       ...dateGroups.map(({ label, sessions }) =>
         this.dateSection(label, sessions),
       ),
@@ -648,13 +650,8 @@ export class SessionsPanel {
     return h(
       "div",
       { class: "flex flex-col" },
-      group?.error
-        ? h(
-            "div",
-            { class: "px-2 py-1 text-[11px] text-muted-foreground" },
-            group.error,
-          )
-        : null,
+      this.statusBanner(),
+      group?.error ? this.statusLine(group.error) : null,
       ...dateGroups.map(({ label, sessions: dateSessions }) =>
         this.dateSection(label, dateSessions),
       ),
@@ -1094,6 +1091,26 @@ export class SessionsPanel {
           : null,
       ),
     );
+  }
+
+  statusLine(text) {
+    return h(
+      "div",
+      {
+        role: "status",
+        "aria-live": "polite",
+        class: "px-2 py-1 text-[11px] text-muted-foreground",
+      },
+      text,
+    );
+  }
+
+  statusBanner() {
+    const parts = [];
+    if (this.refreshing) parts.push("Refreshing…");
+    if (this.error && this.groups.length) parts.push(this.error);
+    if (!parts.length) return null;
+    return this.statusLine(parts.join(" · "));
   }
 
   emptyState(message, showStart = false) {

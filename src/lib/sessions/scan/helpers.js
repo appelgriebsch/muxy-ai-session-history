@@ -168,11 +168,11 @@ export function slugify(cwd) {
 }
 
 export function pathMatchesCwd(pathVal, cwd) {
-  if (!pathVal || typeof pathVal !== "string") return false;
+  if (!pathVal || typeof pathVal !== "string" || !cwd) return false;
   try {
-    const a = normPath(pathVal);
-    const b = normPath(cwd);
-    return a === b || pathVal.includes(cwd);
+    // Exact normalized path only — avoid substring false positives
+    // (e.g. /tmp/proj matching /tmp/proj-old).
+    return normPath(pathVal) === normPath(cwd);
   } catch {
     return false;
   }

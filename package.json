@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
+    "esbuild": "^0.25.12",
     "tailwindcss": "^4.3.0",
     "vite": "^7.3.5"
   },
@@ -29,19 +30,26 @@
       "notifications:write",
       "commands:run-script"
     ],
-    "events": ["project.switched", "worktree.switched"],
+    "events": [
+      "project.switched",
+      "worktree.switched"
+    ],
     "panels": [
       {
         "id": "sessions",
         "title": "AI Sessions",
-        "icon": { "symbol": "clock.arrow.circlepath" },
+        "icon": {
+          "symbol": "clock.arrow.circlepath"
+        },
         "entry": "panel/index.html",
         "position": "right",
         "mode": "floating",
         "headerButtons": [
           {
             "id": "refresh",
-            "icon": { "symbol": "arrow.clockwise" },
+            "icon": {
+              "symbol": "arrow.clockwise"
+            },
             "tooltip": "Refresh",
             "command": "refresh-sessions"
           }
@@ -53,7 +61,10 @@
         "id": "toggle-sessions",
         "title": "AI Sessions: Toggle Panel",
         "defaultShortcut": "cmd+shift+h",
-        "action": { "kind": "togglePanel", "panel": "sessions" }
+        "action": {
+          "kind": "togglePanel",
+          "panel": "sessions"
+        }
       },
       {
         "id": "refresh-sessions",
@@ -62,13 +73,18 @@
       {
         "id": "resume-picker",
         "title": "AI Sessions: Resume…",
-        "action": { "kind": "runScript", "script": "scripts/resume-picker.built.js" }
+        "action": {
+          "kind": "runScript",
+          "script": "scripts/resume-picker.built.js"
+        }
       }
     ],
     "topbarItems": [
       {
         "id": "sessions",
-        "icon": { "symbol": "clock.arrow.circlepath" },
+        "icon": {
+          "symbol": "clock.arrow.circlepath"
+        },
         "tooltip": "AI Sessions",
         "command": "toggle-sessions"
       }

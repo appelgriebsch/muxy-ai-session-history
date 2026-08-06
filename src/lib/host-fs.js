@@ -355,12 +355,22 @@ export function createHostFs(exec) {
   /**
    * Remove a file or directory tree.
    * @param {string} path
+   * @param {{ root?: string }} [opts] — if set, path must equal root or be under root/
    */
-  const removePath = (path) => {
-    if (!path) throw new Error("removePath: path required");
-    // Refuse obviously dangerous roots
-    if (path === "/" || path === "" || path === "~") {
-      throw new Error("removePath: refusing dangerous path");
+  const removePath = (path, opts = {}) => {
+    if (!path || typeof path !== "string") throw new Error("removePath: path required");
+    if (!path.startsWith("/") || path === "/") {
+      throw new Error("removePath: refusing non-absolute or root path");
+    }
+    const parts = path.split("/").filter(Boolean);
+    if (parts.some((p) => p === "." || p === "..")) {
+      throw new Error("removePath: path traversal refused");
+    }
+    if (opts.root) {
+      const r = String(opts.root).replace(/\/+$/, "") || "/";
+      if (r === "/" || (!path.startsWith(`${r}/`) && path !== r)) {
+        throw new Error("removePath: path outside allowed root");
+      }
     }
     return chain(run(exec, [HOST_BINS.rm, "-rf", path], { timeoutMs: 20000 }), (r) => {
       assertOk(r, `removePath ${path}`);

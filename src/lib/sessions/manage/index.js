@@ -1,6 +1,6 @@
 import { joinPath, sqlQuote } from "../../host-fs.js";
 import { isSafeSessionId } from "../../sanitize.js";
-import { slugify, parseSimpleYaml, toPromise } from "../scan/helpers.js";
+import { slugify, toPromise } from "../scan/helpers.js";
 
 /**
  * @param {*} fs
@@ -228,7 +228,8 @@ async function renameCopilot(fs, home, sessionId, newTitle) {
 async function deleteGrok(fs, home, sessionId) {
   const sessionDir = await findGrokSessionDir(fs, home, sessionId);
   if (!sessionDir) throw new Error(`Grok session not found: ${sessionId}`);
-  await toPromise(fs.removePath(sessionDir));
+  const root = joinPath(home, ".grok", "sessions");
+  await toPromise(fs.removePath(sessionDir, { root }));
 }
 
 async function deleteClaude(fs, home, sessionId, cwd) {
@@ -261,13 +262,14 @@ async function deleteClaude(fs, home, sessionId, cwd) {
     }
   }
   if (!target) throw new Error(`Claude session not found: ${sessionId}`);
-  await toPromise(fs.removePath(target));
+  await toPromise(fs.removePath(target, { root: projects }));
 }
 
 async function deleteCursor(fs, home, sessionId) {
   const sessionDir = await findCursorSessionDir(fs, home, sessionId);
   if (!sessionDir) throw new Error(`Cursor session not found: ${sessionId}`);
-  await toPromise(fs.removePath(sessionDir));
+  const root = joinPath(home, ".cursor", "chats");
+  await toPromise(fs.removePath(sessionDir, { root }));
 }
 
 /**
@@ -319,5 +321,3 @@ export async function deleteSessionJs(fs, cli, sessionId, cwd) {
   }
 }
 
-// silence unused import in some bundlers
-void parseSimpleYaml;

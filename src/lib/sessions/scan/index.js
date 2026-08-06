@@ -15,15 +15,9 @@ import { hasSqlite3 } from "../../host-fs.js";
  */
 export async function listSessionsJs(fs, cli, cwd, opts = {}) {
   const id = String(cli || "").toLowerCase();
-  let sqliteAvailable = opts.sqliteAvailable;
-  if (sqliteAvailable === undefined && (id === "codex" || id === "copilot")) {
-    try {
-      // Prefer fs-level probe if caller didn't inject; host-fs doesn't expose exec.
-      sqliteAvailable = true;
-    } catch {
-      sqliteAvailable = true;
-    }
-  }
+  // Callers (scan.js façade, resume-picker) should pass sqliteAvailable after probing.
+  // Default true so fixture tests with real sqlite work without an exec probe.
+  const sqliteAvailable = opts.sqliteAvailable !== false;
 
   switch (id) {
     case "grok":

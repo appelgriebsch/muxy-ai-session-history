@@ -49,6 +49,13 @@ describe("scan helpers", () => {
     assert.equal(pathQuote("/Users/a/b"), "%2FUsers%2Fa%2Fb");
   });
 
+  it("pathMatchesCwd is exact (no prefix false positive)", async () => {
+    const { pathMatchesCwd } = await import("../src/lib/sessions/scan/helpers.js");
+    assert.equal(pathMatchesCwd("/tmp/muxy-test-proj", "/tmp/muxy-test-proj"), true);
+    assert.equal(pathMatchesCwd("/tmp/muxy-test-proj-extra", "/tmp/muxy-test-proj"), false);
+    assert.equal(pathMatchesCwd("/tmp/muxy-test-proj/", "/tmp/muxy-test-proj"), true);
+  });
+
   it("md5Hex matches node crypto", () => {
     const s = "/tmp/project";
     assert.equal(md5Hex(s), createHash("md5").update(s, "utf8").digest("hex"));

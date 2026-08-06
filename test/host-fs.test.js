@@ -158,6 +158,13 @@ describe("host-fs mock argv contracts", () => {
     assert.equal(typeof p.then, "function");
     assert.equal(await p, "async");
   });
+
+  it("removePath refuses root, traversal, and outside root", async () => {
+    const fs = createHostFs(() => ({ stdout: "", stderr: "", exitCode: 0 }));
+    assert.throws(() => fs.removePath("/"), /root/i);
+    assert.throws(() => fs.removePath("/tmp/../etc"), /traversal/i);
+    assert.throws(() => fs.removePath("/tmp/evil", { root: "/Users/me" }), /outside/i);
+  });
 });
 
 describe("host-fs real tools", () => {

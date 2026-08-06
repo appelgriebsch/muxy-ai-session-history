@@ -29,13 +29,6 @@ export async function listGrok(fs, cwd, opts = {}) {
     const childIsDir = await toPromise(fs.isDir(child));
     if (!childIsDir) return null;
 
-    // Skip symlinks: ls -ld starts with 'l'
-    const ld = await toPromise(
-      // re-check via isDir already; treat as dir-only
-      true,
-    );
-    void ld;
-
     let title = "(untitled)";
     let updated = await toPromise(fs.mtimeMs(child));
     let sid = name;
@@ -62,6 +55,7 @@ export async function listGrok(fs, cwd, opts = {}) {
       }
     }
     return sessionRow("grok", name, title, updated, null);
+    // (symlinks: isDir is false for symlink dirs — intentional non-follow)
   });
 
   const out = rows.filter(Boolean);
