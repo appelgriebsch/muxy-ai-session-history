@@ -13,6 +13,9 @@ const ICONS = {
     '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  /** Chevron pointing down (menu closed); rotate 180° when open if needed. */
+  chevron:
+    '<path d="m6 9 6 6 6-6"/>',
 };
 
 export function icon(name, size = 14, className = "", strokeWidth = 2) {

@@ -12,7 +12,8 @@ import {
   setShowArchived,
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
-import { filterGroups, listAll, pickStartCli } from "@/lib/sessions/index";
+import { filterGroups, listAll } from "@/lib/sessions/index";
+import { buildStartActionModel, pickStartCli } from "@/lib/sessions/start-cli";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
 import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
@@ -54,8 +55,10 @@ export class SessionsPanel {
     this.editDraft = "";
     this.editError = null;
     this.confirmingDeleteKey = null;
+    this.startMenuOpen = false;
     this._pendingFocus = null;
     this._lastEditedKey = null;
+    this._startMenuDocListener = null;
   }
 
   clearEditState() {
@@ -67,6 +70,84 @@ export class SessionsPanel {
   clearInlineModes() {
     this.clearEditState();
     this.confirmingDeleteKey = null;
+    this.closeStartMenu();
+  }
+
+  closeStartMenu() {
+    this.startMenuOpen = false;
+    this._detachStartMenuListeners();
+  }
+
+  _detachStartMenuListeners() {
+    if (this._startMenuDocListener) {
+      document.removeEventListener("pointerdown", this._startMenuDocListener, true);
+      document.removeEventListener("keydown", this._startMenuDocListener, true);
+      this._startMenuDocListener = null;
+    }
+  }
+
+  _attachStartMenuListeners() {
+    this._detachStartMenuListeners();
+    const onDoc = (e) => {
+      if (!this.startMenuOpen) return;
+      if (e.type === "keydown") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.closeStartMenu();
+          this._pendingFocus = "start-chevron";
+          this.render();
+        }
+        return;
+      }
+      if (e.type === "pointerdown") {
+        const shell = this.root.querySelector("[data-start-split]");
+        if (shell && shell.contains(e.target)) return;
+        // Close flag + detach now, but defer re-render so the current click
+        // still hits its target (full re-render would steal the gesture).
+        this.closeStartMenu();
+        setTimeout(() => {
+          if (!this.startMenuOpen) this.render();
+        }, 0);
+      }
+    };
+    this._startMenuDocListener = onDoc;
+    document.addEventListener("pointerdown", onDoc, true);
+    document.addEventListener("keydown", onDoc, true);
+  }
+
+  toggleStartMenu() {
+    if (this.startMenuOpen) {
+      this.closeStartMenu();
+      this._pendingFocus = "start-chevron";
+      this.render();
+      return;
+    }
+    this.clearEditState();
+    this.confirmingDeleteKey = null;
+    this.startMenuOpen = true;
+    this._attachStartMenuListeners();
+    this._pendingFocus = "start-menu-item";
+    this.render();
+  }
+
+  async preferCli(id) {
+    if (!id || !this.installed.some((p) => p.id === id)) {
+      this.closeStartMenu();
+      this._pendingFocus = "start-chevron";
+      this.render();
+      return;
+    }
+    if (id !== this.preferredCli) {
+      this.preferredCli = id;
+      try {
+        await setPreferredCli(id);
+      } catch {
+        // Keep in-memory preferred; storage may catch up on next write.
+      }
+    }
+    this.closeStartMenu();
+    this._pendingFocus = "start-chevron";
+    this.render();
   }
 
   async start() {
@@ -103,6 +184,12 @@ export class SessionsPanel {
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
         this.filter = "all";
         await setListFilter("all");
+      }
+      // Heal ghost preferred when stored CLI is no longer installed.
+      const resolvedPreferred = pickStartCli(this.preferredCli, installed);
+      if (resolvedPreferred && resolvedPreferred !== this.preferredCli) {
+        this.preferredCli = resolvedPreferred;
+        await setPreferredCli(resolvedPreferred);
       }
       if (this.editingKey && !editTargetStillPresent(this.editingKey, this.groups)) {
         this.clearEditState();
@@ -162,10 +249,20 @@ export class SessionsPanel {
   }
 
   async startNew() {
+    if (this.startMenuOpen) {
+      this.closeStartMenu();
+      this.render();
+    }
     const cli = pickStartCli(this.preferredCli, this.installed);
     if (!cli) return;
     try {
       await openStartTerminal(cli);
+      // Heal stored preference when pick fell back (e.g. preferred CLI uninstalled).
+      if (cli !== this.preferredCli) {
+        this.preferredCli = cli;
+        await setPreferredCli(cli);
+        this.render();
+      }
     } catch (err) {
       try {
         await muxy.notifications.notify({
@@ -189,6 +286,7 @@ export class SessionsPanel {
   beginRename(session) {
     if (this.busyId) return;
     const key = sessionRowKey(session.cli, session.id);
+    this.closeStartMenu();
     this.confirmingDeleteKey = null;
     this.editingKey = key;
     this.editDraft = session.title ?? "";
@@ -207,6 +305,7 @@ export class SessionsPanel {
   beginDelete(session) {
     if (this.busyId) return;
     const key = sessionRowKey(session.cli, session.id);
+    this.closeStartMenu();
     this.clearEditState();
     this.confirmingDeleteKey = key;
     this._lastEditedKey = key;
@@ -359,6 +458,17 @@ export class SessionsPanel {
         `button[data-session-key="${dataKeyAttr(key)}"]`,
       );
       btn?.focus();
+      return;
+    }
+    if (intent === "start-chevron") {
+      this.root.querySelector("button[data-start-chevron]")?.focus();
+      return;
+    }
+    if (intent === "start-menu-item") {
+      const selected = this.root.querySelector(
+        "[data-start-menu] [aria-selected='true']",
+      );
+      (selected ?? this.root.querySelector("[data-start-menu] button"))?.focus();
     }
   }
 
@@ -825,30 +935,111 @@ export class SessionsPanel {
 
   footer() {
     const canStart = this.installed.length > 0;
-    const startCli = pickStartCli(this.preferredCli, this.installed);
-    const label = startCli
-      ? `Start new ${this.installed.find((p) => p.id === startCli)?.displayName ?? startCli}`
-      : "Start new session";
+    const model = buildStartActionModel(this.preferredCli, this.installed);
+
+    if (!canStart || !model.showMenu) {
+      return h(
+        "div",
+        { class: "border-t border-border px-2.5 py-2" },
+        h(
+          "button",
+          {
+            type: "button",
+            disabled: !canStart,
+            class:
+              "flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border bg-surface text-[12px] text-foreground outline-none hover:bg-accent disabled:opacity-50",
+            onclick: () => this.startNew(),
+          },
+          icon("sparkles", 12),
+          model.label,
+        ),
+      );
+    }
+
+    const menuOpen = this.startMenuOpen;
 
     return h(
       "div",
-      { class: "border-t border-border px-2.5 py-2" },
+      { class: "relative border-t border-border px-2.5 py-2" },
       h(
-        "button",
+        "div",
         {
-          type: "button",
-          disabled: !canStart,
-          class:
-            "flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border bg-surface text-[12px] text-foreground outline-none hover:bg-accent disabled:opacity-50",
-          onclick: () => this.startNew(),
+          class: "relative flex h-7 w-full",
+          role: "group",
+          "aria-label": "Start new session",
+          "data-start-split": "true",
         },
-        icon("sparkles", 12),
-        label,
+        h(
+          "button",
+          {
+            type: "button",
+            class:
+              "flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md border border-border border-r-0 bg-surface text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
+            onclick: () => this.startNew(),
+          },
+          icon("sparkles", 12),
+          h("span", { class: "truncate" }, model.label),
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            "data-start-chevron": "true",
+            "aria-label": "Choose preferred CLI",
+            "aria-haspopup": "listbox",
+            "aria-expanded": menuOpen ? "true" : "false",
+            "aria-controls": menuOpen ? "start-cli-menu" : undefined,
+            class:
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-r-md border border-border bg-surface text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
+            onclick: (e) => {
+              e.stopPropagation();
+              this.toggleStartMenu();
+            },
+          },
+          // Menu opens upward: closed chevron points up.
+          icon("chevron", 12, menuOpen ? "" : "rotate-180"),
+        ),
+        menuOpen
+          ? h(
+              "div",
+              {
+                id: "start-cli-menu",
+                role: "listbox",
+                "aria-label": "Preferred AI CLI",
+                "data-start-menu": "true",
+                class:
+                  "absolute bottom-full left-0 right-0 z-20 mb-1 overflow-hidden rounded-md border border-border bg-surface shadow-md",
+              },
+              ...model.items.map((item) =>
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    role: "option",
+                    "aria-selected": item.selected ? "true" : "false",
+                    class: item.selected
+                      ? "flex w-full items-center gap-2 bg-accent px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary"
+                      : "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
+                    onclick: (e) => {
+                      e.stopPropagation();
+                      this.preferCli(item.id);
+                    },
+                  },
+                  providerIcon(item.id, 14, "shrink-0 text-muted-foreground"),
+                  h("span", { class: "min-w-0 flex-1 truncate" }, item.displayName),
+                  item.selected
+                    ? icon("check", 12, "shrink-0 text-primary")
+                    : h("span", { class: "w-3 shrink-0" }),
+                ),
+              ),
+            )
+          : null,
       ),
     );
   }
 
   emptyState(message, showStart = false) {
+    const model = buildStartActionModel(this.preferredCli, this.installed);
     return h(
       "div",
       {
@@ -865,7 +1056,7 @@ export class SessionsPanel {
                 "h-7 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground",
               onclick: () => this.startNew(),
             },
-            "Start new session",
+            model.label,
           )
         : null,
     );

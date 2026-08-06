@@ -11,7 +11,7 @@ Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cur
 - **Readable titles** — Copilot uses `data.db` / `workspace.yaml` / first user message (never bare UUID alone)
 - **Rename / archive / delete** — capability-gated per CLI; rename and delete confirm are **inline in the panel** (no host prompt/confirm UI); **archive is Muxy-only** (does not flip native Codex `archived`)
 - **Resume** — opens a new terminal in the active worktree and runs the CLI’s resume command
-- **Start new** — launches preferred / first-available CLI without resume
+- **Start new** — split button: primary starts the last-chosen / first-available CLI; chevron picks which CLI (stored in extension storage)
 - **Palette** — **AI Sessions: Resume…** searchable modal across all installed providers
 
 ## Requirements
