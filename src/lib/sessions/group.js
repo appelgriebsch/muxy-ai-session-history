@@ -34,3 +34,18 @@ export function filterGroups(groups, filter) {
 export function flattenSessions(groups) {
   return groups.flatMap((g) => g.sessions);
 }
+
+/**
+ * Groups a sorted array of sessions into date buckets.
+ * Returns an array of { label, sessions } objects in chronological order
+ * (most-recent bucket first).
+ */
+export function groupByDate(sessions, dateGroupFn) {
+  const buckets = new Map();
+  for (const s of sessions) {
+    const label = dateGroupFn(s.updatedAt);
+    if (!buckets.has(label)) buckets.set(label, []);
+    buckets.get(label).push(s);
+  }
+  return Array.from(buckets, ([label, sessions]) => ({ label, sessions }));
+}
