@@ -3,7 +3,7 @@
  * runScript context — muxy.* is mostly synchronous.
  *
  * At build time, copy-manifest.mjs replaces the placeholder below with the
- * base64-encoded scan-sessions.py so the picker does not depend on install path.
+ * base64-encoded scan-sessions.cjs so the picker does not depend on install path.
  */
 
 const SCANNER_SOURCE_B64 = "__SCANNER_SOURCE_B64__";
@@ -125,7 +125,7 @@ function decodeScanner() {
 }
 
 function scanCli(cli, cwd, scannerSource) {
-  const result = muxy.exec(["python3", "-", cli, cwd], {
+  const result = muxy.exec(["node", "-", cli, cwd], {
     timeoutMs: 20000,
     stdin: scannerSource,
   });

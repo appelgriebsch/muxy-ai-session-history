@@ -9,11 +9,11 @@ await mkdir(dist, { recursive: true });
 await mkdir(distScripts, { recursive: true });
 await copyFile(resolve(root, "package.json"), resolve(dist, "package.json"));
 await copyFile(
-  resolve(root, "scripts/scan-sessions.py"),
-  resolve(distScripts, "scan-sessions.py"),
+  resolve(root, "scripts/scan-sessions.cjs"),
+  resolve(distScripts, "scan-sessions.cjs"),
 );
 
-const scanner = await readFile(resolve(root, "scripts/scan-sessions.py"), "utf8");
+const scanner = await readFile(resolve(root, "scripts/scan-sessions.cjs"), "utf8");
 const b64 = Buffer.from(scanner, "utf8").toString("base64");
 const pickerSrc = await readFile(resolve(root, "scripts/resume-picker.js"), "utf8");
 const pickerOut = pickerSrc.replaceAll("__SCANNER_SOURCE_B64__", b64);

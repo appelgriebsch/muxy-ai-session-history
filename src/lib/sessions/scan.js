@@ -1,5 +1,5 @@
 import { oneLine, isSafeSessionId } from "@/lib/sanitize";
-import scannerSource from "@/lib/sessions/scanner.py?raw";
+import scannerSource from "@/lib/sessions/scanner.js?raw";
 
 function normalizeSession(raw, cli) {
   if (!raw || typeof raw !== "object") return null;
@@ -38,14 +38,14 @@ function parseScannerOutput(stdout, exitCode, cli) {
 }
 
 /**
- * List sessions for one CLI + cwd via the bundled Python scanner (stdin to python3 -).
+ * List sessions for one CLI + cwd via the bundled Node.js scanner (stdin to node -).
  * @param {string} cli
  * @param {string} cwd
  * @param {{ exec?: Function }} [opts] — optional sync/async exec (panel uses muxy.exec)
  */
 export async function listSessionsForCli(cli, cwd, opts = {}) {
   const exec = opts.exec ?? ((argv, options) => muxy.exec(argv, options));
-  const result = await exec(["python3", "-", cli, cwd], {
+  const result = await exec(["node", "-", cli, cwd], {
     timeoutMs: 20000,
     stdin: scannerSource,
   });
@@ -55,7 +55,7 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
 
 /** Synchronous variant for runScript (muxy.exec is sync there). */
 export function listSessionsForCliSync(cli, cwd, exec = muxy.exec) {
-  const result = exec(["python3", "-", cli, cwd], {
+  const result = exec(["node", "-", cli, cwd], {
     timeoutMs: 20000,
     stdin: scannerSource,
   });
