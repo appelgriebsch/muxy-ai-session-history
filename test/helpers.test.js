@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { oneLine, isSafeSessionId } from "../src/lib/sanitize.js";
 import { shellQuote } from "../src/lib/shell-quote.js";
 import { buildResumeCommand, buildStartCommand } from "../src/lib/resume.js";
-import { buildGroups, filterGroups } from "../src/lib/sessions/group.js";
-import { relativeTime } from "../src/lib/time.js";
+import { buildGroups, filterGroups, groupByDate } from "../src/lib/sessions/group.js";
+import { dateGroup, relativeTime } from "../src/lib/time.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -76,6 +76,33 @@ describe("relativeTime", () => {
   it("formats recent times", () => {
     assert.equal(relativeTime(Date.now() -  thr_ms(0.5)), "just now");
     assert.match(relativeTime(Date.now() - thr_ms(5)), /5m ago/);
+  });
+});
+
+describe("dateGroup", () => {
+  it("returns Today for now", () => {
+    assert.equal(dateGroup(Date.now()), "Today");
+  });
+  it("returns Yesterday for 1 day ago", () => {
+    assert.equal(dateGroup(Date.now() - 86400000), "Yesterday");
+  });
+  it("returns Unknown for falsy input", () => {
+    assert.equal(dateGroup(0), "Unknown");
+  });
+});
+
+describe("groupByDate", () => {
+  it("groups sessions by date label", () => {
+    const sessions = [
+      { id: "1", updatedAt: Date.now() },
+      { id: "2", updatedAt: Date.now() },
+      { id: "3", updatedAt: Date.now() - 86400000 },
+    ];
+    const groups = groupByDate(sessions, dateGroup);
+    assert.equal(groups[0].label, "Today");
+    assert.equal(groups[0].sessions.length, 2);
+    assert.equal(groups[1].label, "Yesterday");
+    assert.equal(groups[1].sessions.length, 1);
   });
 });
 

@@ -9,7 +9,8 @@ import {
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
 import { filterGroups, listAll, pickStartCli } from "@/lib/sessions/index";
-import { relativeTime } from "@/lib/time";
+import { dateGroup, relativeTime } from "@/lib/time";
+import { groupByDate } from "@/lib/sessions/group";
 
 export class SessionsPanel {
   constructor(root) {
@@ -173,10 +174,22 @@ export class SessionsPanel {
     if (!groups.length) {
       return this.emptyState("No sessions for this folder", true);
     }
+    const errors = groups.filter((g) => g.error);
+    const allSessions = groups.flatMap((g) => g.sessions);
+    const dateGroups = groupByDate(allSessions, dateGroup);
     return h(
       "div",
       { class: "flex flex-col gap-1" },
-      ...groups.map((group) => this.section(group)),
+      ...errors.map((g) =>
+        h(
+          "div",
+          { class: "px-2 py-1 text-[11px] text-muted-foreground" },
+          `${g.displayName}: ${g.error}`,
+        ),
+      ),
+      ...dateGroups.map(({ label, sessions }) =>
+        this.dateSection(label, sessions),
+      ),
     );
   }
 
@@ -187,6 +200,7 @@ export class SessionsPanel {
     if (!sessions?.length) {
       return this.emptyState("No sessions for this folder", true);
     }
+    const dateGroups = groupByDate(sessions, dateGroup);
     return h(
       "div",
       { class: "flex flex-col" },
@@ -197,11 +211,13 @@ export class SessionsPanel {
             group.error,
           )
         : null,
-      ...sessions.map((s) => this.row(s)),
+      ...dateGroups.map(({ label, sessions: dateSessions }) =>
+        this.dateSection(label, dateSessions),
+      ),
     );
   }
 
-  section(group) {
+  dateSection(label, sessions) {
     return h(
       "div",
       { class: "flex flex-col" },
@@ -217,22 +233,15 @@ export class SessionsPanel {
             class:
               "text-[11px] font-semibold uppercase tracking-wide text-muted-foreground",
           },
-          group.displayName,
+          label,
         ),
         h(
           "span",
           { class: "font-mono text-[10px] text-muted-foreground" },
-          String(group.sessions.length),
+          String(sessions.length),
         ),
       ),
-      group.error
-        ? h(
-            "div",
-            { class: "px-2 py-1 text-[11px] text-muted-foreground" },
-            `Couldn't load: ${group.error}`,
-          )
-        : null,
-      ...group.sessions.map((s) => this.row(s)),
+      ...sessions.map((s) => this.row(s)),
     );
   }
 
