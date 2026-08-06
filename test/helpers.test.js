@@ -5,6 +5,7 @@ import { shellQuote } from "../src/lib/shell-quote.js";
 import { buildResumeCommand, buildStartCommand } from "../src/lib/resume.js";
 import { buildGroups, filterGroups, groupByDate } from "../src/lib/sessions/group.js";
 import { dateGroup, relativeTime } from "../src/lib/time.js";
+import { PROVIDERS, providerById } from "../src/lib/sessions/providers.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -108,4 +109,47 @@ describe("groupByDate", () => {
 
 function thr_ms(minutes) {
   return minutes * 60 * 1000;
-}
+};
+
+describe("providers capabilities", () => {
+  it("every provider has a capabilities object with rename/archive/delete booleans", () => {
+    for (const p of PROVIDERS) {
+      assert.ok(p.capabilities, `${p.id} missing capabilities`);
+      assert.equal(typeof p.capabilities.rename, "boolean", `${p.id}.capabilities.rename`);
+      assert.equal(typeof p.capabilities.archive, "boolean", `${p.id}.capabilities.archive`);
+      assert.equal(typeof p.capabilities.delete, "boolean", `${p.id}.capabilities.delete`);
+    }
+  });
+
+  it("archive is true for all providers", () => {
+    for (const p of PROVIDERS) {
+      assert.equal(p.capabilities.archive, true, `${p.id} should support archive`);
+    }
+  });
+
+  it("grok supports rename and delete", () => {
+    const grok = providerById("grok");
+    assert.equal(grok.capabilities.rename, true);
+    assert.equal(grok.capabilities.delete, true);
+  });
+
+  it("claude supports delete but not rename", () => {
+    const claude = providerById("claude");
+    assert.equal(claude.capabilities.rename, false);
+    assert.equal(claude.capabilities.delete, true);
+  });
+
+  it("codex supports rename and archive but not delete", () => {
+    const codex = providerById("codex");
+    assert.equal(codex.capabilities.rename, true);
+    assert.equal(codex.capabilities.archive, true);
+    assert.equal(codex.capabilities.delete, false);
+  });
+
+  it("copilot only supports archive", () => {
+    const copilot = providerById("copilot");
+    assert.equal(copilot.capabilities.rename, false);
+    assert.equal(copilot.capabilities.archive, true);
+    assert.equal(copilot.capabilities.delete, false);
+  });
+});

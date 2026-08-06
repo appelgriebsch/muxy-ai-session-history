@@ -7,9 +7,12 @@ const GLOBAL_CAP = 80;
 
 /**
  * Load all sessions for installed CLIs at cwd.
+ * @param {string} cwd
+ * @param {{ archivedSet?: Set<string> }} [opts]
  * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli }>}
  */
-export async function listAll(cwd) {
+export async function listAll(cwd, opts = {}) {
+  const { archivedSet } = opts;
   const installed = await detectInstalled();
   const sessionsByCli = {};
   const errorsByCli = {};
@@ -20,7 +23,7 @@ export async function listAll(cwd) {
 
   const results = await Promise.allSettled(
     installed.map(async (provider) => {
-      const sessions = await listSessionsForCli(provider.id, cwd);
+      const sessions = await listSessionsForCli(provider.id, cwd, { archivedSet });
       return { id: provider.id, sessions };
     }),
   );

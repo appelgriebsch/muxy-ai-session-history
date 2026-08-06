@@ -1,15 +1,40 @@
 /** Canonical provider registry (Muxy-aligned ids). */
 
 export const PROVIDERS = [
-  { id: "grok", displayName: "Grok", binary: "grok", binaries: ["grok"] },
-  { id: "claude", displayName: "Claude", binary: "claude", binaries: ["claude"] },
-  { id: "codex", displayName: "Codex", binary: "codex", binaries: ["codex"] },
-  { id: "copilot", displayName: "Copilot", binary: "copilot", binaries: ["copilot"] },
+  {
+    id: "grok",
+    displayName: "Grok",
+    binary: "grok",
+    binaries: ["grok"],
+    capabilities: { rename: true, archive: true, delete: true },
+  },
+  {
+    id: "claude",
+    displayName: "Claude",
+    binary: "claude",
+    binaries: ["claude"],
+    capabilities: { rename: false, archive: true, delete: true },
+  },
+  {
+    id: "codex",
+    displayName: "Codex",
+    binary: "codex",
+    binaries: ["codex"],
+    capabilities: { rename: true, archive: true, delete: false },
+  },
+  {
+    id: "copilot",
+    displayName: "Copilot",
+    binary: "copilot",
+    binaries: ["copilot"],
+    capabilities: { rename: false, archive: true, delete: false },
+  },
   {
     id: "cursor",
     displayName: "Cursor",
     binary: "cursor-agent",
     binaries: ["cursor-agent", "cursor"],
+    capabilities: { rename: true, archive: true, delete: true },
   },
 ];
 

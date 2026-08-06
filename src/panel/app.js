@@ -2,15 +2,20 @@ import { clear, h } from "@/lib/dom";
 import { icon } from "@/lib/icons";
 import { activeCwd, shortPath } from "@/lib/cwd";
 import {
+  getArchivedSessions,
   getListFilter,
   getPreferredCli,
+  getShowArchived,
   setListFilter,
   setPreferredCli,
+  setShowArchived,
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
 import { filterGroups, listAll, pickStartCli } from "@/lib/sessions/index";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
+import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
+import { providerById } from "@/lib/sessions/providers";
 
 export class SessionsPanel {
   constructor(root) {
@@ -23,11 +28,15 @@ export class SessionsPanel {
     this.loading = true;
     this.error = null;
     this.busyId = null;
+    this.showArchived = false;
+    this.archivedSet = new Set();
   }
 
   async start() {
     this.preferredCli = await getPreferredCli();
     this.filter = await getListFilter();
+    this.showArchived = await getShowArchived();
+    this.archivedSet = await getArchivedSessions();
 
     muxy.events.subscribe("command.refresh-sessions", () => this.refresh());
     muxy.events.subscribe("project.switched", () => this.refresh());
@@ -42,7 +51,8 @@ export class SessionsPanel {
     this.render();
     try {
       this.cwd = await activeCwd();
-      const { installed, groups } = await listAll(this.cwd);
+      this.archivedSet = await getArchivedSessions();
+      const { installed, groups } = await listAll(this.cwd, { archivedSet: this.archivedSet });
       this.installed = installed;
       this.groups = groups;
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
@@ -106,13 +116,101 @@ export class SessionsPanel {
     }
   }
 
+  async toggleShowArchived() {
+    this.showArchived = !this.showArchived;
+    await setShowArchived(this.showArchived);
+    this.render();
+  }
+
+  async rename(session) {
+    const newTitle = await muxy.ui
+      ?.prompt?.("Rename session", "Enter a new title:", session.title)
+      .catch(() => null);
+    if (newTitle === null || newTitle === undefined) return;
+    const trimmed = newTitle.trim();
+    if (!trimmed || trimmed === session.title) return;
+    const key = `${session.cli}:${session.id}`;
+    this.busyId = key;
+    this.render();
+    try {
+      await renameSession(session.cli, session.id, trimmed);
+      await this.refresh();
+    } catch (err) {
+      this.busyId = null;
+      this.render();
+      try {
+        await muxy.notifications.notify({
+          title: "Could not rename session",
+          body: err?.message || String(err),
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  async archive(session) {
+    const newArchived = !session.archived;
+    const key = `${session.cli}:${session.id}`;
+    this.busyId = key;
+    this.render();
+    try {
+      await archiveSession(session.cli, session.id, newArchived);
+      this.archivedSet = await getArchivedSessions();
+      const { groups } = await listAll(this.cwd, { archivedSet: this.archivedSet });
+      this.groups = groups;
+    } catch (err) {
+      try {
+        await muxy.notifications.notify({
+          title: newArchived ? "Could not archive session" : "Could not unarchive session",
+          body: err?.message || String(err),
+        });
+      } catch {
+        /* ignore */
+      }
+    } finally {
+      this.busyId = null;
+      this.render();
+    }
+  }
+
+  async delete(session) {
+    const confirmed = await muxy.ui
+      ?.confirm?.(`Delete session "${session.title}"? This cannot be undone.`)
+      .catch(() => false);
+    if (!confirmed) return;
+    const key = `${session.cli}:${session.id}`;
+    this.busyId = key;
+    this.render();
+    try {
+      await deleteSession(session.cli, session.id, this.cwd);
+      await this.refresh();
+    } catch (err) {
+      this.busyId = null;
+      this.render();
+      try {
+        await muxy.notifications.notify({
+          title: "Could not delete session",
+          body: err?.message || String(err),
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   render() {
     clear(this.root);
     this.root.appendChild(this.view());
   }
 
   view() {
-    const visible = filterGroups(this.groups, this.filter);
+    const allVisible = filterGroups(this.groups, this.filter);
+    // Apply archived filter: unless showArchived is on, hide archived sessions
+    const visible = allVisible.map((g) => ({
+      ...g,
+      sessions: this.showArchived ? g.sessions : g.sessions.filter((s) => !s.archived),
+    })).filter((g) => g.sessions.length || g.error);
     const flat =
       this.filter !== "all"
         ? visible.flatMap((g) => g.sessions)
@@ -150,6 +248,8 @@ export class SessionsPanel {
       ...this.installed.map((p) => ({ id: p.id, label: p.displayName })),
     ];
 
+    const hasArchived = this.groups.some((g) => g.sessions.some((s) => s.archived));
+
     return h(
       "div",
       { class: "flex flex-wrap items-center gap-1 px-2.5 pt-2.5 pb-1" },
@@ -167,6 +267,20 @@ export class SessionsPanel {
           chip.label,
         ),
       ),
+      (hasArchived || this.showArchived)
+        ? h(
+            "button",
+            {
+              type: "button",
+              class: this.showArchived
+                ? "ml-auto h-6 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none"
+                : "ml-auto h-6 rounded-md border border-border bg-surface px-2 text-[11px] text-foreground outline-none hover:bg-accent",
+              onclick: () => this.toggleShowArchived(),
+            },
+            icon("archive", 10),
+            " Archived",
+          )
+        : null,
     );
   }
 
@@ -255,31 +369,85 @@ export class SessionsPanel {
       .filter(Boolean)
       .join(" · ");
 
-    return h(
-      "button",
+    const caps = providerById(session.cli)?.capabilities ?? {};
+
+    const actionButtons = [];
+    if (caps.rename) {
+      actionButtons.push(
+        h("button", {
+          type: "button",
+          title: "Rename",
+          class:
+            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none",
+          onclick: (e) => { e.stopPropagation(); this.rename(session); },
+        }, icon("pencil", 11)),
+      );
+    }
+    if (caps.archive) {
+      actionButtons.push(
+        h("button", {
+          type: "button",
+          title: session.archived ? "Unarchive" : "Archive",
+          class:
+            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-foreground hover:bg-accent outline-none",
+          onclick: (e) => { e.stopPropagation(); this.archive(session); },
+        }, icon(session.archived ? "archive-restore" : "archive", 11)),
+      );
+    }
+    if (caps.delete) {
+      actionButtons.push(
+        h("button", {
+          type: "button",
+          title: "Delete",
+          class:
+            "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-accent outline-none",
+          onclick: (e) => { e.stopPropagation(); this.delete(session); },
+        }, icon("trash", 11)),
+      );
+    }
+
+    const wrapper = h(
+      "div",
       {
-        type: "button",
-        disabled: busy,
-        class:
-          "flex w-full flex-col items-start gap-0.5 rounded-md px-2.5 py-1.5 text-left outline-none hover:bg-accent disabled:opacity-60",
-        onclick: () => this.resume(session),
+        class: `group relative flex w-full items-stretch rounded-md hover:bg-accent${session.archived ? " opacity-60" : ""}`,
       },
       h(
-        "div",
-        { class: "flex w-full items-center gap-2" },
+        "button",
+        {
+          type: "button",
+          disabled: busy,
+          class:
+            "flex min-w-0 flex-1 flex-col items-start gap-0.5 px-2.5 py-1.5 text-left outline-none disabled:opacity-60",
+          onclick: () => this.resume(session),
+        },
+        h(
+          "div",
+          { class: "flex w-full items-center gap-2" },
+          session.archived
+            ? icon("archive", 10, "shrink-0 text-muted-foreground")
+            : null,
+          h(
+            "span",
+            { class: "min-w-0 flex-1 truncate text-[12px] text-foreground" },
+            session.title,
+          ),
+          busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
+        ),
         h(
           "span",
-          { class: "min-w-0 flex-1 truncate text-[12px] text-foreground" },
-          session.title,
+          { class: "font-mono text-[10px] text-muted-foreground" },
+          secondary,
         ),
-        busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
       ),
-      h(
-        "span",
-        { class: "font-mono text-[10px] text-muted-foreground" },
-        secondary,
-      ),
+      actionButtons.length
+        ? h(
+            "div",
+            { class: "flex items-center gap-0.5 pr-1.5" },
+            ...actionButtons,
+          )
+        : null,
     );
+    return wrapper;
   }
 
   footer() {
