@@ -2,7 +2,6 @@ import { buildGroups, filterGroups, flattenSessions } from "@/lib/sessions/group
 import { ensurePython3, listSessionsForCli } from "@/lib/sessions/scan";
 import { detectInstalled } from "@/lib/sessions/which";
 import { providerById } from "@/lib/sessions/providers";
-import { pickStartCli } from "@/lib/sessions/start-cli";
 
 const GLOBAL_CAP = 80;
 
@@ -71,5 +70,4 @@ export async function listAll(cwd, opts = {}) {
   return { installed, groups, sessionsByCli, errorsByCli };
 }
 
-export { pickStartCli };
 export { filterGroups, flattenSessions, providerById, detectInstalled };

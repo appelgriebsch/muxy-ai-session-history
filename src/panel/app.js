@@ -80,7 +80,7 @@ export class SessionsPanel {
 
   _detachStartMenuListeners() {
     if (this._startMenuDocListener) {
-      document.removeEventListener("mousedown", this._startMenuDocListener, true);
+      document.removeEventListener("pointerdown", this._startMenuDocListener, true);
       document.removeEventListener("keydown", this._startMenuDocListener, true);
       this._startMenuDocListener = null;
     }
@@ -90,27 +90,35 @@ export class SessionsPanel {
     this._detachStartMenuListeners();
     const onDoc = (e) => {
       if (!this.startMenuOpen) return;
-      if (e.type === "keydown" && e.key === "Escape") {
-        e.preventDefault();
-        this.closeStartMenu();
-        this.render();
+      if (e.type === "keydown") {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.closeStartMenu();
+          this._pendingFocus = "start-chevron";
+          this.render();
+        }
         return;
       }
-      if (e.type === "mousedown") {
+      if (e.type === "pointerdown") {
         const shell = this.root.querySelector("[data-start-split]");
         if (shell && shell.contains(e.target)) return;
+        // Close flag + detach now, but defer re-render so the current click
+        // still hits its target (full re-render would steal the gesture).
         this.closeStartMenu();
-        this.render();
+        setTimeout(() => {
+          if (!this.startMenuOpen) this.render();
+        }, 0);
       }
     };
     this._startMenuDocListener = onDoc;
-    document.addEventListener("mousedown", onDoc, true);
+    document.addEventListener("pointerdown", onDoc, true);
     document.addEventListener("keydown", onDoc, true);
   }
 
   toggleStartMenu() {
     if (this.startMenuOpen) {
       this.closeStartMenu();
+      this._pendingFocus = "start-chevron";
       this.render();
       return;
     }
@@ -118,18 +126,27 @@ export class SessionsPanel {
     this.confirmingDeleteKey = null;
     this.startMenuOpen = true;
     this._attachStartMenuListeners();
+    this._pendingFocus = "start-menu-item";
     this.render();
   }
 
   async preferCli(id) {
-    if (!id || id === this.preferredCli) {
+    if (!id || !this.installed.some((p) => p.id === id)) {
       this.closeStartMenu();
+      this._pendingFocus = "start-chevron";
       this.render();
       return;
     }
-    this.preferredCli = id;
-    await setPreferredCli(id);
+    if (id !== this.preferredCli) {
+      this.preferredCli = id;
+      try {
+        await setPreferredCli(id);
+      } catch {
+        // Keep in-memory preferred; storage may catch up on next write.
+      }
+    }
     this.closeStartMenu();
+    this._pendingFocus = "start-chevron";
     this.render();
   }
 
@@ -167,6 +184,12 @@ export class SessionsPanel {
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
         this.filter = "all";
         await setListFilter("all");
+      }
+      // Heal ghost preferred when stored CLI is no longer installed.
+      const resolvedPreferred = pickStartCli(this.preferredCli, installed);
+      if (resolvedPreferred && resolvedPreferred !== this.preferredCli) {
+        this.preferredCli = resolvedPreferred;
+        await setPreferredCli(resolvedPreferred);
       }
       if (this.editingKey && !editTargetStillPresent(this.editingKey, this.groups)) {
         this.clearEditState();
@@ -435,6 +458,17 @@ export class SessionsPanel {
         `button[data-session-key="${dataKeyAttr(key)}"]`,
       );
       btn?.focus();
+      return;
+    }
+    if (intent === "start-chevron") {
+      this.root.querySelector("button[data-start-chevron]")?.focus();
+      return;
+    }
+    if (intent === "start-menu-item") {
+      const selected = this.root.querySelector(
+        "[data-start-menu] [aria-selected='true']",
+      );
+      (selected ?? this.root.querySelector("[data-start-menu] button"))?.focus();
     }
   }
 
@@ -940,7 +974,7 @@ export class SessionsPanel {
           {
             type: "button",
             class:
-              "flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md border border-border border-r-0 bg-surface text-[12px] text-foreground outline-none hover:bg-accent",
+              "flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md border border-border border-r-0 bg-surface text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
             onclick: () => this.startNew(),
           },
           icon("sparkles", 12),
@@ -950,24 +984,29 @@ export class SessionsPanel {
           "button",
           {
             type: "button",
+            "data-start-chevron": "true",
             "aria-label": "Choose preferred CLI",
-            "aria-haspopup": "menu",
+            "aria-haspopup": "listbox",
             "aria-expanded": menuOpen ? "true" : "false",
+            "aria-controls": menuOpen ? "start-cli-menu" : undefined,
             class:
-              "flex h-7 w-7 shrink-0 items-center justify-center rounded-r-md border border-border bg-surface text-foreground outline-none hover:bg-accent",
+              "flex h-7 w-7 shrink-0 items-center justify-center rounded-r-md border border-border bg-surface text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
             onclick: (e) => {
               e.stopPropagation();
               this.toggleStartMenu();
             },
           },
-          icon("chevron", 12, menuOpen ? "rotate-180" : ""),
+          // Menu opens upward: closed chevron points up.
+          icon("chevron", 12, menuOpen ? "" : "rotate-180"),
         ),
         menuOpen
           ? h(
               "div",
               {
-                role: "menu",
+                id: "start-cli-menu",
+                role: "listbox",
                 "aria-label": "Preferred AI CLI",
+                "data-start-menu": "true",
                 class:
                   "absolute bottom-full left-0 right-0 z-20 mb-1 overflow-hidden rounded-md border border-border bg-surface shadow-md",
               },
@@ -976,11 +1015,11 @@ export class SessionsPanel {
                   "button",
                   {
                     type: "button",
-                    role: "menuitemradio",
-                    "aria-checked": item.selected ? "true" : "false",
+                    role: "option",
+                    "aria-selected": item.selected ? "true" : "false",
                     class: item.selected
-                      ? "flex w-full items-center gap-2 bg-accent px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent"
-                      : "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent",
+                      ? "flex w-full items-center gap-2 bg-accent px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary"
+                      : "flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
                     onclick: (e) => {
                       e.stopPropagation();
                       this.preferCli(item.id);
