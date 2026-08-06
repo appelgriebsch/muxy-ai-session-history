@@ -2,7 +2,7 @@
 
 Browse and resume AI coding-agent sessions for the **active worktree**, grouped by provider.
 
-Supports **Grok**, **Claude Code**, **Codex**, **GitHub Copilot CLI**, and **Cursor Agent** when those binaries are on `PATH`.
+Supports **Grok**, **Claude Code**, **Codex**, **OpenCode**, **GitHub Copilot CLI**, and **Cursor Agent** when those binaries are on `PATH`.
 
 ## Features
 
@@ -33,6 +33,7 @@ Sessions are **not** from `muxy.agents.list()` (live status only). The extension
 | Grok | `~/.grok/sessions/<urlencode(cwd)>/` | `grok --resume <id>` |
 | Claude | `~/.claude/projects/<slug>/` | `claude --resume <id>` |
 | Codex | `~/.codex/` (SQLite / rollouts) | `codex resume <id>` |
+| OpenCode | `$OPENCODE_DATA_DIR/opencode.db` or `~/.local/share/opencode/opencode.db` | `opencode --session <id>` |
 | Copilot | `~/.copilot/` | `copilot --resume=<id>` |
 | Cursor | `~/.cursor/chats/<md5(cwd)>/` | `cursor-agent --resume <id>` |
 

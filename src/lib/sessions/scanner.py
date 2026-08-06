@@ -2,7 +2,7 @@
 """List AI CLI sessions for a cwd. Prints JSON array of {id,title,updatedAt,branch,cli}.
 
 Usage: scan-sessions.py <cli> <cwd>
-  cli: grok | claude | codex | copilot | cursor
+  cli: grok | claude | codex | opencode | copilot | cursor
 """
 from __future__ import annotations
 
@@ -333,6 +333,51 @@ def list_codex(cwd: str) -> list[dict]:
     return list_codex_files(home, cwd)
 
 
+def opencode_home() -> Path:
+    configured = os.environ.get("OPENCODE_DATA_DIR")
+    if configured:
+        first = configured.split(",")[0].strip()
+        if first:
+            return Path(first).expanduser()
+    xdg = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "opencode"
+
+
+def list_opencode(cwd: str) -> list[dict]:
+    db_path = opencode_home() / "opencode.db"
+    if not db_path.is_file():
+        return []
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        with sqlite3.connect(uri, uri=True) as db:
+            cols = {row[1] for row in db.execute("PRAGMA table_info(session)").fetchall()}
+            required = {"id", "directory", "time_updated"}
+            if not required.issubset(cols):
+                return []
+            title_col = "title" if "title" in cols else "''"
+            rows = db.execute(
+                f"SELECT id, {title_col}, time_updated FROM session "
+                "WHERE directory = ? ORDER BY time_updated DESC LIMIT ?",
+                (cwd, PER_GROUP_CAP),
+            )
+            out: list[dict] = []
+            for sid, title, updated in rows:
+                if not isinstance(sid, str) or not sid:
+                    continue
+                out.append(
+                    row(
+                        "opencode",
+                        sid,
+                        str(title) if isinstance(title, str) and title.strip() else "(untitled)",
+                        iso_to_ms(updated) or 0,
+                    )
+                )
+            return out
+    except sqlite3.Error:
+        return []
+
+
 def list_copilot(cwd: str) -> list[dict]:
     home_env = os.environ.get("COPILOT_HOME")
     home = Path(home_env).expanduser() if home_env else Path.home() / ".copilot"
@@ -502,6 +547,8 @@ def main() -> int:
             sessions = list_claude(cwd)
         elif cli == "codex":
             sessions = list_codex(cwd)
+        elif cli == "opencode":
+            sessions = list_opencode(cwd)
         elif cli == "copilot":
             sessions = list_copilot(cwd)
         elif cli == "cursor":

@@ -30,11 +30,13 @@ describe("resume commands", () => {
     assert.match(buildResumeCommand("grok", id), /^grok --resume '/);
     assert.match(buildResumeCommand("claude", id), /^claude --resume '/);
     assert.match(buildResumeCommand("codex", id), /^codex resume '/);
+    assert.match(buildResumeCommand("opencode", id), /^opencode --session '/);
     assert.match(buildResumeCommand("copilot", id), /^copilot --resume='/);
     assert.match(buildResumeCommand("cursor", id), /^cursor-agent --resume '/);
   });
   it("start commands", () => {
     assert.equal(buildStartCommand("grok"), "grok");
+    assert.equal(buildStartCommand("opencode"), "opencode");
     assert.equal(buildStartCommand("cursor"), "cursor-agent");
   });
 });

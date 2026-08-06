@@ -5,6 +5,7 @@ const RESUME = {
   grok: (id) => `grok --resume ${shellQuote(id)}`,
   claude: (id) => `claude --resume ${shellQuote(id)}`,
   codex: (id) => `codex resume ${shellQuote(id)}`,
+  opencode: (id) => `opencode --session ${shellQuote(id)}`,
   copilot: (id) => `copilot --resume=${shellQuote(id)}`,
   cursor: (id) => `cursor-agent --resume ${shellQuote(id)}`,
 };
@@ -13,6 +14,7 @@ const START = {
   grok: "grok",
   claude: "claude",
   codex: "codex",
+  opencode: "opencode",
   copilot: "copilot",
   cursor: "cursor-agent",
 };

@@ -12,6 +12,7 @@ const PROVIDERS = [
   { id: "grok", displayName: "Grok", binaries: ["grok"] },
   { id: "claude", displayName: "Claude", binaries: ["claude"] },
   { id: "codex", displayName: "Codex", binaries: ["codex"] },
+  { id: "opencode", displayName: "OpenCode", binaries: ["opencode"] },
   { id: "copilot", displayName: "Copilot", binaries: ["copilot"] },
   { id: "cursor", displayName: "Cursor", binaries: ["cursor-agent", "cursor"] },
 ];
@@ -20,6 +21,7 @@ const RESUME = {
   grok: (id) => "grok --resume " + shellQuote(id),
   claude: (id) => "claude --resume " + shellQuote(id),
   codex: (id) => "codex resume " + shellQuote(id),
+  opencode: (id) => "opencode --session " + shellQuote(id),
   copilot: (id) => "copilot --resume=" + shellQuote(id),
   cursor: (id) => "cursor-agent --resume " + shellQuote(id),
 };
