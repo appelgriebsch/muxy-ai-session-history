@@ -41,7 +41,7 @@ export const PROVIDERS = [
     displayName: "OpenCode",
     binary: "opencode",
     binaries: ["opencode"],
-    capabilities: { rename: true, archive: true, delete: true },
+    capabilities: { rename: true, delete: true },
   },
 ];
 
