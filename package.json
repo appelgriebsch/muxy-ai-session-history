@@ -25,10 +25,7 @@
       "commands:exec",
       "projects:read",
       "worktrees:read",
-      "storage:read",
-      "storage:write",
-      "notifications:write",
-      "commands:run-script"
+      "notifications:write"
     ],
     "events": [
       "project.switched",
