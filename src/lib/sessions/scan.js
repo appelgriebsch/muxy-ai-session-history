@@ -38,16 +38,6 @@ export async function ensureHostToolsReady(exec) {
   return Boolean(await toPromise(ensureHostTools(exec)));
 }
 
-/** @deprecated Use ensureHostToolsReady */
-export async function ensurePython3(exec) {
-  return ensureHostToolsReady(exec);
-}
-
-export function resetPython3Probe() {
-  resetHostToolsProbe();
-  resetSqliteProbe();
-}
-
 export { resetHostToolsProbe };
 
 /**
@@ -63,11 +53,6 @@ export async function resolveSqliteAvailable(exec) {
     sqliteAvailableCache = false;
   }
   return sqliteAvailableCache;
-}
-
-/** @deprecated Use resolveSqliteAvailable */
-async function resolveSqlite(exec) {
-  return resolveSqliteAvailable(exec);
 }
 
 /**
@@ -90,7 +75,7 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
   const sqliteAvailable =
     opts.sqliteAvailable !== undefined
       ? Boolean(opts.sqliteAvailable)
-      : await resolveSqlite(exec);
+      : await resolveSqliteAvailable(exec);
   try {
     // listSessionsJs is chain-based: plain array (sync exec) or Promise (async exec).
     const rows = await toPromise(
@@ -123,10 +108,16 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
 /**
  * Synchronous variant for runScript (sync muxy.exec → plain arrays).
  * Prefer the resume-picker IIFE; this is for tests / advanced callers.
+ *
+ * **Important:** always returns a plain `Array` — never a Promise.
+ * If the underlying exec function returns Promises (async exec), this
+ * function throws immediately; use {@link listSessionsForCli} instead.
+ *
  * @param {string} cli
  * @param {string} cwd
  * @param {Function | { exec?: Function, fs?: object, home?: string, sqliteAvailable?: boolean }} [execOrOpts]
  * @returns {Array}
+ * @throws {Error} when exec is async and resolves to a Promise
  */
 export function listSessionsForCliSync(cli, cwd, execOrOpts = muxy.exec) {
   const opts =
