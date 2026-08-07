@@ -1,14 +1,20 @@
 import { buildGroups, filterGroups, flattenSessions } from "@/lib/sessions/group";
-import { ensureHostToolsReady, listSessionsForCli } from "@/lib/sessions/scan";
+import { createHostFs } from "@/lib/host-fs";
+import {
+  ensureHostToolsReady,
+  listSessionsForCli,
+  resolveSqliteAvailable,
+} from "@/lib/sessions/scan";
 import { detectInstalled } from "@/lib/sessions/which";
 import { providerById } from "@/lib/sessions/providers";
+import { toPromise } from "@/lib/sessions/scan/helpers";
 
 const GLOBAL_CAP = 80;
 
 /**
  * Load all sessions for installed CLIs at cwd.
  * @param {string} cwd
- * @param {{ exec?: Function }} [opts]
+ * @param {{ exec?: Function, fs?: object, home?: string, sqliteAvailable?: boolean }} [opts]
  * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli, hostToolsMissing?: boolean }>}
  */
 export async function listAll(cwd, opts = {}) {
@@ -35,9 +41,29 @@ export async function listAll(cwd, opts = {}) {
     };
   }
 
+  // One host-fs + home + sqlite probe shared across all CLI scanners.
+  const fs = opts.fs ?? createHostFs(exec);
+  let home = opts.home;
+  if (home == null) {
+    try {
+      home = await toPromise(fs.homeDir());
+    } catch {
+      home = undefined;
+    }
+  }
+  const sqliteAvailable =
+    opts.sqliteAvailable !== undefined
+      ? Boolean(opts.sqliteAvailable)
+      : await resolveSqliteAvailable(exec);
+
   const results = await Promise.allSettled(
     installed.map(async (provider) => {
-      const sessions = await listSessionsForCli(provider.id, cwd, { exec });
+      const sessions = await listSessionsForCli(provider.id, cwd, {
+        exec,
+        fs,
+        home,
+        sqliteAvailable,
+      });
       return { id: provider.id, sessions };
     }),
   );

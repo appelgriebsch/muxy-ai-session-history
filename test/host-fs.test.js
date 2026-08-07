@@ -197,6 +197,23 @@ describe("host-fs real tools", () => {
     assert.ok((await fs.mtimeMs(join(dir, "a.txt"))) > 0);
   });
 
+  it("listDirDetailed returns kind + mtime for entries", async () => {
+    const fs = createHostFs(realExec);
+    writeFileSync(join(dir, "a.txt"), "x");
+    mkdirSync(join(dir, "sub"));
+    const entries = await fs.listDirDetailed(dir);
+    const byName = Object.fromEntries(entries.map((e) => [e.name, e]));
+    assert.equal(byName["a.txt"]?.kind, "file");
+    assert.equal(byName.sub?.kind, "dir");
+    assert.ok((byName["a.txt"]?.mtimeMs || 0) > 0);
+  });
+
+  it("listDirDetailed missing dir returns empty array", async () => {
+    const fs = createHostFs(realExec);
+    const entries = await fs.listDirDetailed(join(dir, "does-not-exist"));
+    assert.deepEqual(entries, []);
+  });
+
   it("sqliteQuery readonly", async () => {
     const fs = createHostFs(realExec);
     const db = join(dir, "t.sqlite");

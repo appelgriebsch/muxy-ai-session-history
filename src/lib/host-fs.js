@@ -196,6 +196,120 @@ export function createHostFs(exec) {
     );
   };
 
+  /**
+   * Map BSD/GNU stat file-type strings to a coarse kind.
+   * Symlinks and specials → "other" (scanners do not follow links).
+   * @param {string} typeStr
+   * @returns {'file'|'dir'|'other'}
+   */
+  const kindFromStatType = (typeStr) => {
+    const s = String(typeStr || "").toLowerCase();
+    if (s.includes("directory") || s === "dir") return "dir";
+    // BSD: "Regular File"; GNU: "regular file" / "regular empty file"
+    if (s.includes("regular") || s === "file") return "file";
+    return "other";
+  };
+
+  /**
+   * Parse multi-file stat output: path\\ttype\\tmtime_sec\\tsize per line.
+   * @param {string} text
+   * @param {Map<string, string>} fullToBase  full path → basename
+   * @returns {Map<string, { kind: string, mtimeMs: number, size: number|null }>}
+   */
+  const parseStatBatch = (text, fullToBase) => {
+    /** @type {Map<string, { kind: string, mtimeMs: number, size: number|null }>} */
+    const out = new Map();
+    for (const rawLine of String(text || "").split("\n")) {
+      const line = rawLine.replace(/\r$/, "");
+      if (!line) continue;
+      const parts = line.split("\t");
+      if (parts.length < 3) continue;
+      const full = parts[0];
+      const typeStr = parts[1];
+      const sec = Number(parts[2]);
+      const sizeRaw = parts.length >= 4 ? Number(parts[3]) : NaN;
+      const base = fullToBase.get(full) ?? full.replace(/\/+$/, "").split("/").pop();
+      if (!base) continue;
+      out.set(base, {
+        kind: kindFromStatType(typeStr),
+        mtimeMs: Number.isFinite(sec) ? Math.trunc(sec * 1000) : 0,
+        size: Number.isFinite(sizeRaw) ? sizeRaw : null,
+      });
+    }
+    return out;
+  };
+
+  const STAT_CHUNK = 80;
+
+  /**
+   * List directory entries with kind + mtime (+ size when available).
+   * Uses listDir + batched multi-path stat (macOS -f, Linux -c fallback).
+   * Missing dir → []. Symlinks are kind "other".
+   *
+   * @param {string} dirPath
+   * @returns {Array<{ name: string, kind: 'file'|'dir'|'other', mtimeMs: number, size: number|null }> | Promise<…>}
+   */
+  const listDirDetailed = (dirPath) => {
+    if (!dirPath) throw new Error("listDirDetailed: path required");
+    return chain(listDir(dirPath), (names) => {
+      if (!names.length) return [];
+
+      /** @type {Map<string, string>} */
+      const fullToBase = new Map();
+      const fullPaths = names.map((name) => {
+        const full = joinPath(dirPath, name);
+        fullToBase.set(full, name);
+        return full;
+      });
+
+      /**
+       * @param {string[]} chunk
+       * @param {boolean} useBsd
+       */
+      const runChunk = (chunk, useBsd) => {
+        const argv = useBsd
+          ? [HOST_BINS.stat, "-f", "%N\t%HT\t%m\t%z", "--", ...chunk]
+          : [HOST_BINS.stat, "-c", "%n\t%F\t%Y\t%s", "--", ...chunk];
+        return run(exec, argv, { timeoutMs: 15000 });
+      };
+
+      /**
+       * @param {number} start
+       * @param {Map<string, { kind: string, mtimeMs: number, size: number|null }>} acc
+       * @param {boolean|null} bsdMode  null = try BSD first
+       */
+      const processChunks = (start, acc, bsdMode) => {
+        if (start >= fullPaths.length) {
+          return names.map((name) => {
+            const meta = acc.get(name);
+            return {
+              name,
+              kind: meta?.kind ?? "other",
+              mtimeMs: meta?.mtimeMs ?? 0,
+              size: meta?.size ?? null,
+            };
+          });
+        }
+        const chunk = fullPaths.slice(start, start + STAT_CHUNK);
+        const preferBsd = bsdMode !== false;
+        return chain(runChunk(chunk, preferBsd), (r) => {
+          if (r.exitCode !== 0 && preferBsd && bsdMode == null) {
+            // Fall back to GNU stat for the whole remaining walk.
+            return processChunks(start, acc, false);
+          }
+          if (r.exitCode === 0) {
+            const parsed = parseStatBatch(r.stdout, fullToBase);
+            for (const [k, v] of parsed) acc.set(k, v);
+          }
+          // Partial failure: keep going with whatever we have.
+          return processChunks(start + STAT_CHUNK, acc, preferBsd ? bsdMode ?? true : false);
+        });
+      };
+
+      return processChunks(0, new Map(), null);
+    });
+  };
+
   const readText = (filePath) => {
     if (!filePath) throw new Error("readText: path required");
     return chain(run(exec, [HOST_BINS.cat, filePath], { timeoutMs: 20000 }), (r) => {
@@ -459,6 +573,7 @@ export function createHostFs(exec) {
     homeDir,
     env,
     listDir,
+    listDirDetailed,
     readText,
     readHead,
     fileSize,

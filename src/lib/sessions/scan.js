@@ -50,7 +50,12 @@ export function resetPython3Probe() {
 
 export { resetHostToolsProbe };
 
-async function resolveSqlite(exec) {
+/**
+ * Probe (and cache) whether /usr/bin/sqlite3 is available.
+ * @param {Function} exec
+ * @returns {Promise<boolean>}
+ */
+export async function resolveSqliteAvailable(exec) {
   if (sqliteAvailableCache != null) return sqliteAvailableCache;
   try {
     sqliteAvailableCache = Boolean(await toPromise(hasSqlite3(exec)));
@@ -60,18 +65,40 @@ async function resolveSqlite(exec) {
   return sqliteAvailableCache;
 }
 
+/** @deprecated Use resolveSqliteAvailable */
+async function resolveSqlite(exec) {
+  return resolveSqliteAvailable(exec);
+}
+
 /**
  * List sessions for one CLI + cwd via pure JS scanners + host-fs.
  * @param {string} cli
  * @param {string} cwd
- * @param {{ exec?: Function, fs?: object }} [opts]
+ * @param {{
+ *   exec?: Function,
+ *   fs?: object,
+ *   home?: string,
+ *   sqliteAvailable?: boolean,
+ *   claudeConfigDir?: string | null,
+ *   codexHome?: string | null,
+ *   copilotHome?: string | null,
+ * }} [opts]
  */
 export async function listSessionsForCli(cli, cwd, opts = {}) {
   const exec = opts.exec ?? ((argv, options) => muxy.exec(argv, options));
   const fs = opts.fs ?? createHostFs(exec);
-  const sqliteAvailable = await resolveSqlite(exec);
+  const sqliteAvailable =
+    opts.sqliteAvailable !== undefined
+      ? Boolean(opts.sqliteAvailable)
+      : await resolveSqlite(exec);
   try {
-    const rows = await listSessionsJs(fs, cli, cwd, { sqliteAvailable });
+    const rows = await listSessionsJs(fs, cli, cwd, {
+      sqliteAvailable,
+      home: opts.home,
+      claudeConfigDir: opts.claudeConfigDir,
+      codexHome: opts.codexHome,
+      copilotHome: opts.copilotHome,
+    });
     return (rows || [])
       .map((item) => normalizeSession(item, cli))
       .filter(Boolean);

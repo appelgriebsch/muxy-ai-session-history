@@ -34,6 +34,17 @@ npm run build
 
 In Muxy: **Extensions → Load Unpacked** → select this folder (or `dist/` after publish-style install). Grant permissions when prompted (`commands:exec`, `tabs:write`, etc.).
 
+### First-open exec consent
+
+Session listing uses `muxy.exec` against home-directory stores (not the worktree sandbox). Muxy prompts for **runtime consent** per base binary (`argvPrefix`). On first open you may see prompts for:
+
+- `/bin/bash` — CLI detection (`command -v`)
+- `/bin/ls`, `/usr/bin/stat`, `/usr/bin/head`, `/usr/bin/printenv` — directory listing and session metadata
+- `/usr/bin/sqlite3` — Codex / Copilot stores
+- `/bin/cat`, `/usr/bin/tee`, `/bin/mv`, … — rename/delete
+
+Choose **Allow & remember** for each (or the scan will re-prompt on every call if you only tap **Allow**). After grants, scanners batch directory metadata and cap how many session files are opened.
+
 Toggle the panel with the topbar clock icon or **⌘⇧H**.
 
 ## How history is resolved

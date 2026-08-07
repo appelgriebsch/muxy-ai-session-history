@@ -4,11 +4,46 @@ import { oneLine } from "../../sanitize.js";
 
 export const PER_GROUP_CAP = 25;
 
+/** Extra candidates to enrich so dir-mtime skew does not drop fresh sessions. */
+export const ENRICH_SLACK = 10;
+
+/** mapPool concurrency for host-fs bound scanners (lower = friendlier on remote). */
+export const SCAN_CONCURRENCY = 8;
+
+/** Codex JSONL fallback: max directories to walk. */
+export const CODEX_MAX_DIRS_WALKED = 200;
+
+/** Copilot: max session-state dirs to probe (mtime-ordered). */
+export const COPILOT_MAX_STATE_DIRS = 100;
+
 export const UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 export const CODEX_ROLLOUT_RE =
   /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-fA-F-]{36})\.jsonl(?:\.zst)?$/;
+
+/**
+ * Filter + sort directory entries by mtime descending, then take a limit.
+ * @param {Array<{ name: string, kind?: string, mtimeMs?: number }>} entries
+ * @param {{
+ *   limit?: number,
+ *   kind?: 'file'|'dir'|null,
+ *   nameOk?: (name: string) => boolean,
+ * }} [opts]
+ */
+export function takeRecent(entries, opts = {}) {
+  const limit = opts.limit ?? PER_GROUP_CAP;
+  const kind = opts.kind ?? null;
+  const nameOk = opts.nameOk ?? (() => true);
+  return (entries || [])
+    .filter((e) => {
+      if (!e || !nameOk(e.name)) return false;
+      if (kind && e.kind !== kind) return false;
+      return true;
+    })
+    .sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0))
+    .slice(0, Math.max(0, limit));
+}
 
 const WEAK_TITLES = new Set(["", "(untitled)", "untitled", "session"]);
 
