@@ -460,4 +460,112 @@ describe("listCopilot", () => {
     const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
     assert.equal(rows.length, 0);
   });
+
+  function uuidAt(i) {
+    const hex = i.toString(16).padStart(12, "0");
+    return `cccccccc-cccc-cccc-cccc-${hex}`;
+  }
+
+  it("multi-project flood: DB-first returns all project sessions, zero foreign", async () => {
+    const { utimesSync } = await import("node:fs");
+    const projectCount = 40;
+    const foreignCount = 120;
+    const projectSids = [];
+    const foreignSids = [];
+    const storeSessions = [];
+    const storeTurns = [];
+
+    // Older project sessions (low mtime) — would be dropped by global mtime top-100.
+    for (let i = 0; i < projectCount; i++) {
+      const sid = uuidAt(i);
+      projectSids.push(sid);
+      const d = sessionDir(sid, {
+        cwd: PROJ,
+        events: `{"type":"user.message","data":{"content":"proj ${i}"}}\n`,
+        name: `Proj ${i}`,
+      });
+      const t = new Date(2020, 0, 1, 0, 0, i);
+      utimesSync(d, t, t);
+      storeSessions.push([sid, PROJ, `Project ${i}`]);
+      storeTurns.push(sid);
+    }
+
+    // Many newer foreign sessions dominate global mtime.
+    for (let i = 0; i < foreignCount; i++) {
+      const sid = uuidAt(1000 + i);
+      foreignSids.push(sid);
+      const d = sessionDir(sid, {
+        cwd: OTHER,
+        events: `{"type":"user.message","data":{"content":"foreign ${i}"}}\n`,
+        name: `Foreign ${i}`,
+      });
+      const t = new Date(2026, 5, 1, 0, 0, i);
+      utimesSync(d, t, t);
+      storeSessions.push([sid, OTHER, `Foreign ${i}`]);
+      storeTurns.push(sid);
+    }
+
+    writeStore({ sessions: storeSessions, turns: storeTurns });
+
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
+    const got = ids(rows);
+    assert.equal(rows.length, projectCount, `expected ${projectCount} project sessions`);
+    for (const sid of projectSids) {
+      assert.ok(got.has(sid), `missing project session ${sid}`);
+    }
+    for (const sid of foreignSids) {
+      assert.equal(got.has(sid), false, `foreign session leaked: ${sid}`);
+    }
+  });
+
+  it("no silent 25-cap: returns more than PER_GROUP_CAP for one project", async () => {
+    const { PER_GROUP_CAP } = await import("../src/lib/sessions/scan/helpers.js");
+    const n = PER_GROUP_CAP + 10;
+    const storeSessions = [];
+    const storeTurns = [];
+    for (let i = 0; i < n; i++) {
+      const sid = uuidAt(i);
+      sessionDir(sid, {
+        cwd: PROJ,
+        events: `{"type":"user.message","data":{"content":"s ${i}"}}\n`,
+      });
+      storeSessions.push([sid, PROJ, `S ${i}`]);
+      storeTurns.push(sid);
+    }
+    writeStore({ sessions: storeSessions, turns: storeTurns });
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
+    assert.equal(rows.length, n);
+    assert.ok(rows.length > PER_GROUP_CAP);
+  });
+
+  it("sqliteAvailable false: residual mtime wave still finds recent project sessions", async () => {
+    const { utimesSync } = await import("node:fs");
+    // A few project dirs with recent mtime + foreign older ones.
+    const target = uuidAt(1);
+    const d = sessionDir(target, {
+      cwd: PROJ,
+      events: '{"type":"user.message","data":{"content":"target"}}\n',
+    });
+    utimesSync(d, new Date(2026, 6, 1), new Date(2026, 6, 1));
+    for (let i = 0; i < 5; i++) {
+      const sid = uuidAt(50 + i);
+      const fd = sessionDir(sid, {
+        cwd: OTHER,
+        events: '{"type":"user.message","data":{"content":"f"}}\n',
+      });
+      utimesSync(fd, new Date(2020, 0, i + 1), new Date(2020, 0, i + 1));
+    }
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome: home,
+      sqliteAvailable: false,
+    });
+    assert.ok(ids(rows).has(target));
+    assert.equal(
+      rows.every((r) => r.cwd === PROJ),
+      true,
+    );
+  });
 });

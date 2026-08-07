@@ -28,7 +28,10 @@ const RESUME = {
   opencode: (id) => "opencode --session " + shellQuote(id),
 };
 
+/** Soft cap for non–cwd-complete providers in the multi-CLI palette. */
 const GLOBAL_CAP = 80;
+/** Providers that must stream the full project-scoped list (no room slice). */
+const UNCAPPED_PROVIDERS = { copilot: true };
 
 function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
@@ -196,11 +199,15 @@ function main() {
     items: function (emit) {
       /** @type {string[]} */
       const softErrors = [];
-      let total = 0;
+      /** Count of capped (non-uncapped) rows emitted toward GLOBAL_CAP. */
+      let cappedTotal = 0;
 
       for (let i = 0; i < installed.length; i++) {
-        if (total >= GLOBAL_CAP) break;
         const provider = installed[i];
+        const uncapped = Boolean(UNCAPPED_PROVIDERS[provider.id]);
+        // Skip remaining capped providers once their shared budget is spent;
+        // still scan uncapped providers (e.g. full Copilot project list).
+        if (!uncapped && cappedTotal >= GLOBAL_CAP) continue;
         try {
           const rows = listRowsSync(fs, provider.id, cwd, scanOpts);
           /** @type {Array<{ id: string, title: string, subtitle: string, _updatedAt: number }>} */
@@ -228,18 +235,23 @@ function main() {
             batch.sort(function (a, b) {
               return (b._updatedAt || 0) - (a._updatedAt || 0);
             });
-            const room = GLOBAL_CAP - total;
-            const slice = batch.slice(0, room);
-            total += slice.length;
-            emit(
-              slice.map(function (item) {
-                return {
-                  id: item.id,
-                  title: item.title,
-                  subtitle: item.subtitle,
-                };
-              }),
-            );
+            // Cwd-complete providers (Copilot): emit full project set.
+            // Others share GLOBAL_CAP among themselves.
+            const slice = uncapped
+              ? batch
+              : batch.slice(0, Math.max(0, GLOBAL_CAP - cappedTotal));
+            if (!uncapped) cappedTotal += slice.length;
+            if (slice.length) {
+              emit(
+                slice.map(function (item) {
+                  return {
+                    id: item.id,
+                    title: item.title,
+                    subtitle: item.subtitle,
+                  };
+                }),
+              );
+            }
           }
         } catch (e) {
           const msg = e && e.message ? e.message : String(e);

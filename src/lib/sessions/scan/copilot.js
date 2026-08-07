@@ -1,19 +1,42 @@
-import { joinPath, chain } from "../../host-fs.js";
+import { joinPath, chain, sqlQuote } from "../../host-fs.js";
 import { isSafeSessionId, isCopilotStubId } from "../../sanitize.js";
 import {
-  PER_GROUP_CAP,
   COPILOT_MAX_STATE_DIRS,
   isoToMs,
   sessionRow,
   parseSimpleYaml,
   pathMatchesCwd,
+  normPath,
   firstUserMessageFromEvents,
   pickDisplayTitle,
   resolveTitleLikeColumn,
   mapSeq,
   tryChain,
-  takeRecent,
 } from "./helpers.js";
+
+/** Path-like columns allowed after PRAGMA discovery (never free-form SQL). */
+const PATH_COL_CANDIDATES = [
+  "cwd",
+  "path",
+  "workspace_path",
+  "workspacePath",
+  "directory",
+  "workspace",
+];
+
+const UPDATED_COL_CANDIDATES = [
+  "updated_at",
+  "updatedAt",
+  "updated_at_ms",
+  "last_active_at",
+  "created_at",
+  "mtime",
+];
+
+/** Session row primary key preference (sessions / workspaces tables). */
+const SESSION_SID_COL_CANDIDATES = ["id", "session_id", "sessionId"];
+/** Turn/event rows: prefer session_id over local row id. */
+const TURN_SID_COL_CANDIDATES = ["session_id", "sessionId", "id"];
 
 /**
  * @param {*} fs
@@ -56,7 +79,7 @@ function loadCopilotTurnIds(fs, home) {
             tryChain(() => fs.sqliteTableColumns(dbPath, "turns"), null),
             (cols) => {
               if (!cols) return null;
-              const sidCol = ["session_id", "sessionId", "id"].find((c) => cols.has(c));
+              const sidCol = TURN_SID_COL_CANDIDATES.find((c) => cols.has(c));
               if (!sidCol) return null;
               return chain(
                 tryChain(
@@ -113,6 +136,75 @@ function mergeCopilotSession(store, sid, fields) {
 }
 
 /**
+ * Collect session ids for a cwd from allowlisted path columns in sessions/workspaces.
+ * DB is an index only — callers must re-check cwd on the FS.
+ * @param {*} fs
+ * @param {string} home
+ * @param {string} cwd
+ * @returns {Set<string> | Promise<Set<string>>}
+ */
+function discoverCopilotSidsForCwd(fs, home, cwd) {
+  /** @type {Set<string>} */
+  const found = new Set();
+  const cwdNorm = normPath(cwd);
+  if (!cwdNorm) return found;
+
+  const dbNames = ["session-store.db", "data.db"];
+  // Match normalized path; also raw cwd when slash form differs (DB is index only).
+  const cwdLits = new Set([sqlQuote(cwdNorm)]);
+  if (String(cwd) !== cwdNorm) cwdLits.add(sqlQuote(String(cwd)));
+
+  return chain(
+    mapSeq(dbNames, (dbName) => {
+      const dbPath = joinPath(home, dbName);
+      return chain(fs.isFile(dbPath), (isFile) => {
+        if (!isFile) return null;
+        return chain(tryChain(() => fs.sqliteTables(dbPath), null), (tables) => {
+          if (!tables) return null;
+
+          const loadTable = (table) => {
+            if (!tables.has(table)) return null;
+            return chain(
+              tryChain(() => fs.sqliteTableColumns(dbPath, table), null),
+              (cols) => {
+                if (!cols) return null;
+                // sessions: prefer id; workspaces: prefer session_id over local row id.
+                const sidPrefs =
+                  table === "workspaces"
+                    ? TURN_SID_COL_CANDIDATES
+                    : SESSION_SID_COL_CANDIDATES;
+                const sidCol = sidPrefs.find((c) => cols.has(c));
+                const pathCol = PATH_COL_CANDIDATES.find((c) => cols.has(c));
+                if (!sidCol || !pathCol) return null;
+                // Column names only from PRAGMA allowlist; values via sqlQuote.
+                const pathPred = [...cwdLits]
+                  .map((lit) => `${pathCol} = ${lit}`)
+                  .join(" OR ");
+                const sql =
+                  `SELECT DISTINCT ${sidCol} AS sid FROM ${table} ` +
+                  `WHERE ${sidCol} IS NOT NULL AND (${pathPred})`;
+                return chain(
+                  tryChain(() => fs.sqliteQuery(dbPath, sql), []),
+                  (rows) => {
+                    for (const r of rows || []) {
+                      if (typeof r.sid === "string" && r.sid) found.add(r.sid);
+                    }
+                    return null;
+                  },
+                );
+              },
+            );
+          };
+
+          return chain(loadTable("sessions"), () => loadTable("workspaces"));
+        });
+      });
+    }),
+    () => found,
+  );
+}
+
+/**
  * Enrich titles from data.db / session-store.db for already-resumable sessions.
  * @param {*} fs
  * @param {string} home
@@ -143,13 +235,7 @@ function readCopilotDataDb(fs, home, store) {
                   "last_active_at",
                   "created_at",
                 ].find((c) => scols.has(c)) || "NULL";
-              const sessPathCol = [
-                "cwd",
-                "path",
-                "workspace_path",
-                "workspacePath",
-                "directory",
-              ].find((c) => scols.has(c));
+              const sessPathCol = PATH_COL_CANDIDATES.find((c) => scols.has(c));
               const sessBranchCol = ["branch", "git_branch"].find((c) => scols.has(c));
 
               /** @type {Record<string, [string|null, string|null]>} */
@@ -160,16 +246,10 @@ function readCopilotDataDb(fs, home, store) {
                     tryChain(() => fs.sqliteTableColumns(dbPath, "workspaces"), null),
                     (wcols) => {
                       if (!wcols) return null;
-                      const sidCol = ["session_id", "sessionId", "id"].find((c) =>
+                      const sidCol = TURN_SID_COL_CANDIDATES.find((c) =>
                         wcols.has(c),
                       );
-                      const pathCol = [
-                        "cwd",
-                        "path",
-                        "workspace_path",
-                        "workspacePath",
-                        "directory",
-                      ].find((c) => wcols.has(c));
+                      const pathCol = PATH_COL_CANDIDATES.find((c) => wcols.has(c));
                       const branchCol = ["branch", "git_branch"].find((c) =>
                         wcols.has(c),
                       );
@@ -259,23 +339,11 @@ function readFallbackTables(fs, dbPath, tables, store) {
       tryChain(() => fs.sqliteTableColumns(dbPath, table), null),
       (cols) => {
         if (!cols) return null;
-        const idCol = ["id", "session_id", "sessionId"].find((c) => cols.has(c));
+        const idCol = SESSION_SID_COL_CANDIDATES.find((c) => cols.has(c));
         if (!idCol) return null;
         const titleCol = resolveTitleLikeColumn(cols);
-        const updatedCol = [
-          "updated_at",
-          "updatedAt",
-          "updated_at_ms",
-          "mtime",
-          "last_active_at",
-        ].find((c) => cols.has(c));
-        const pathCol = [
-          "cwd",
-          "workspace",
-          "workspace_path",
-          "workspacePath",
-          "path",
-        ].find((c) => cols.has(c));
+        const updatedCol = UPDATED_COL_CANDIDATES.find((c) => cols.has(c));
+        const pathCol = PATH_COL_CANDIDATES.find((c) => cols.has(c));
         const sql =
           `SELECT ${idCol} AS sid, ` +
           `${titleCol ? `${titleCol} AS title` : "NULL AS title"}, ` +
@@ -300,7 +368,138 @@ function readFallbackTables(fs, dbPath, tables, store) {
 }
 
 /**
- * List CLI-resumable Copilot sessions.
+ * Build the FS probe set: DB-indexed sids present under session-state, plus a
+ * residual mtime wave over unprobed dirs (budget = COPILOT_MAX_STATE_DIRS).
+ * Never uses global mtime top-N as the sole admission gate before cwd match.
+ *
+ * @param {Array<{ name: string, kind?: string, mtimeMs?: number }>} stateEntries
+ * @param {Set<string>} dbSids
+ * @returns {Array<{ name: string, kind?: string, mtimeMs?: number }>}
+ */
+function buildCopilotProbeEntries(stateEntries, dbSids) {
+  /** @type {Map<string, { name: string, kind?: string, mtimeMs?: number }>} */
+  const byName = new Map();
+  for (const e of stateEntries || []) {
+    if (!e || e.kind !== "dir") continue;
+    const name = e.name;
+    if (!isSafeSessionId(name) || isCopilotStubId(name)) continue;
+    byName.set(name, e);
+  }
+
+  /** @type {Array<{ name: string, kind?: string, mtimeMs?: number }>} */
+  const probe = [];
+  /** @type {Set<string>} */
+  const selected = new Set();
+
+  // 1) DB candidates that still have a session-state dir.
+  for (const sid of dbSids || []) {
+    const entry = byName.get(sid);
+    if (!entry || selected.has(sid)) continue;
+    selected.add(sid);
+    probe.push(entry);
+  }
+
+  // 2) Residual: newest unprobed dirs first, hard budget on FS probes only.
+  const residual = [...byName.values()]
+    .filter((e) => !selected.has(e.name))
+    .sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+  const residualBudget = Math.max(0, COPILOT_MAX_STATE_DIRS);
+  for (let i = 0; i < residual.length && i < residualBudget; i++) {
+    probe.push(residual[i]);
+  }
+
+  return probe;
+}
+
+/**
+ * Probe one session-state dir for cwd match + resume evidence.
+ * @param {*} fs
+ * @param {string} state
+ * @param {{ name: string, mtimeMs?: number }} entry
+ * @param {string} cwd
+ * @param {Set<string>} turnIds
+ * @param {Record<string, any>} store
+ */
+function probeCopilotStateDir(fs, state, entry, cwd, turnIds, store) {
+  const sid = entry.name;
+  const child = joinPath(state, sid);
+  const wsPath = joinPath(child, "workspace.yaml");
+
+  return chain(tryChain(() => fs.readText(wsPath), null), (yamlText) => {
+    let sessionCwd = null;
+    let branch = null;
+    let yamlName = null;
+    if (yamlText) {
+      try {
+        const yamlData = parseSimpleYaml(yamlText);
+        sessionCwd = yamlData.cwd || yamlData.path || null;
+        branch = yamlData.branch || yamlData.git_branch || null;
+        yamlName = yamlData.name || yamlData.title || null;
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const metaPath = joinPath(child, "meta.json");
+    return chain(tryChain(() => fs.readText(metaPath), null), (metaText) => {
+      let metaTitle = null;
+      if (metaText) {
+        try {
+          const data = JSON.parse(metaText);
+          if (data && typeof data === "object") {
+            metaTitle = data.title || data.name || null;
+            if (!sessionCwd && typeof data.cwd === "string") {
+              sessionCwd = data.cwd;
+            }
+            if (!branch && typeof data.branch === "string") {
+              branch = data.branch;
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
+      // FS re-check: DB path columns are an index only.
+      if (!sessionCwd || !pathMatchesCwd(sessionCwd, cwd)) return null;
+
+      const eventsPath = joinPath(child, "events.jsonl");
+      return chain(tryChain(() => fs.fileSize(eventsPath), 0), (size) => {
+        const hasEvents = size > 0;
+        const hasTurns = turnIds.has(sid);
+        if (!hasEvents && !hasTurns) return null;
+
+        const firstUserP = hasEvents
+          ? chain(
+              tryChain(() => fs.readHead(eventsPath, { maxBytes: 256_000 }), null),
+              (head) => (head != null ? firstUserMessageFromEvents(head) : null),
+            )
+          : null;
+
+        return chain(firstUserP, (firstUser) => {
+          const updated = entry.mtimeMs || 0;
+          mergeCopilotSession(store, sid, {
+            yaml_name: yamlName,
+            meta_title: metaTitle,
+            first_user: firstUser,
+            cwd_val: sessionCwd,
+            branch,
+            updated,
+            resumable: true,
+          });
+          return null;
+        });
+      });
+    });
+  });
+}
+
+/**
+ * List CLI-resumable Copilot sessions for the active worktree.
+ * Returns **all** resumable sessions for cwd (newest first), not capped at 25.
+ * Discovery is cwd-complete via DB index + residual FS budget — never global
+ * mtime top-N as the sole gate before cwd match.
+ *
  * Returns plain array when fs is sync; Promise when exec is async.
  * @param {*} fs
  * @param {string} cwd
@@ -319,132 +518,62 @@ export function listCopilot(fs, cwd, opts = {}) {
     return chain(turnIdsP, (turnIds) => {
       const state = joinPath(home, "session-state");
       return chain(tryChain(() => fs.listDirDetailed(state), []), (stateEntries) => {
-        const children = stateEntries.length
-          ? takeRecent(stateEntries, {
-              limit: COPILOT_MAX_STATE_DIRS,
-              kind: "dir",
-              nameOk: (name) => isSafeSessionId(name) && !isCopilotStubId(name),
-            })
-          : [];
+        const dbSidsP =
+          opts.sqliteAvailable === false
+            ? new Set()
+            : tryChain(() => discoverCopilotSidsForCwd(fs, home, cwd), new Set());
 
-        return chain(
-          mapSeq(children, (entry) => {
-            const name = entry.name;
-            const child = joinPath(state, name);
-            const sid = name;
+        return chain(dbSidsP, (dbSids) => {
+          const children = buildCopilotProbeEntries(stateEntries, dbSids || new Set());
 
-            const wsPath = joinPath(child, "workspace.yaml");
-            return chain(tryChain(() => fs.readText(wsPath), null), (yamlText) => {
-              let sessionCwd = null;
-              let branch = null;
-              let yamlName = null;
-              if (yamlText) {
-                try {
-                  const yamlData = parseSimpleYaml(yamlText);
-                  sessionCwd = yamlData.cwd || yamlData.path || null;
-                  branch = yamlData.branch || yamlData.git_branch || null;
-                  yamlName = yamlData.name || yamlData.title || null;
-                } catch {
-                  /* ignore */
+          return chain(
+            mapSeq(children, (entry) =>
+              probeCopilotStateDir(fs, state, entry, cwd, turnIds, store),
+            ),
+            () => {
+              const enrichP =
+                opts.sqliteAvailable === false
+                  ? null
+                  : tryChain(() => readCopilotDataDb(fs, home, store), null);
+
+              return chain(enrichP, () => {
+                const out = [];
+                for (const [sid, meta] of Object.entries(store)) {
+                  if (!meta.resumable) continue;
+                  const title = pickDisplayTitle(sid, {
+                    db_title: meta.db_title,
+                    yaml_name: meta.yaml_name,
+                    meta_title: meta.meta_title,
+                    first_user: meta.first_user,
+                    cwd: meta.cwd,
+                    branch: meta.branch,
+                  });
+                  out.push(
+                    sessionRow(
+                      "copilot",
+                      sid,
+                      title,
+                      Math.trunc(meta.updated || 0),
+                      meta.branch,
+                      meta.cwd,
+                    ),
+                  );
                 }
-              }
-
-              const metaPath = joinPath(child, "meta.json");
-              return chain(tryChain(() => fs.readText(metaPath), null), (metaText) => {
-                let metaTitle = null;
-                if (metaText) {
-                  try {
-                    const data = JSON.parse(metaText);
-                    if (data && typeof data === "object") {
-                      metaTitle = data.title || data.name || null;
-                      if (!sessionCwd && typeof data.cwd === "string") {
-                        sessionCwd = data.cwd;
-                      }
-                      if (!branch && typeof data.branch === "string") {
-                        branch = data.branch;
-                      }
-                    }
-                  } catch {
-                    /* ignore */
-                  }
-                }
-
-                if (!sessionCwd || !pathMatchesCwd(sessionCwd, cwd)) return null;
-
-                const eventsPath = joinPath(child, "events.jsonl");
-                return chain(
-                  tryChain(() => fs.fileSize(eventsPath), 0),
-                  (size) => {
-                    const hasEvents = size > 0;
-                    const hasTurns = turnIds.has(sid);
-                    if (!hasEvents && !hasTurns) return null;
-
-                    const firstUserP = hasEvents
-                      ? chain(
-                          tryChain(
-                            () => fs.readHead(eventsPath, { maxBytes: 256_000 }),
-                            null,
-                          ),
-                          (head) =>
-                            head != null ? firstUserMessageFromEvents(head) : null,
-                        )
-                      : null;
-
-                    return chain(firstUserP, (firstUser) => {
-                      const updated = entry.mtimeMs || 0;
-                      mergeCopilotSession(store, sid, {
-                        yaml_name: yamlName,
-                        meta_title: metaTitle,
-                        first_user: firstUser,
-                        cwd_val: sessionCwd,
-                        branch,
-                        updated,
-                        resumable: true,
-                      });
-                      return null;
-                    });
-                  },
-                );
+                out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+                // Project-complete: no silent PER_GROUP_CAP for Copilot.
+                return out;
               });
-            });
-          }),
-          () => {
-            const enrichP =
-              opts.sqliteAvailable === false
-                ? null
-                : tryChain(() => readCopilotDataDb(fs, home, store), null);
-
-            return chain(enrichP, () => {
-              const out = [];
-              for (const [sid, meta] of Object.entries(store)) {
-                if (!meta.resumable) continue;
-                const title = pickDisplayTitle(sid, {
-                  db_title: meta.db_title,
-                  yaml_name: meta.yaml_name,
-                  meta_title: meta.meta_title,
-                  first_user: meta.first_user,
-                  cwd: meta.cwd,
-                  branch: meta.branch,
-                });
-                out.push(
-                  sessionRow(
-                    "copilot",
-                    sid,
-                    title,
-                    Math.trunc(meta.updated || 0),
-                    meta.branch,
-                    meta.cwd,
-                  ),
-                );
-              }
-              out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-              return out.slice(0, PER_GROUP_CAP);
-            });
-          },
-        );
+            },
+          );
+        });
       });
     });
   });
 }
 
-export { resolveCopilotHome, loadCopilotTurnIds };
+export {
+  resolveCopilotHome,
+  loadCopilotTurnIds,
+  discoverCopilotSidsForCwd,
+  buildCopilotProbeEntries,
+};
