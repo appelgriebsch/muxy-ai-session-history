@@ -1,5 +1,7 @@
 # RESEARCH: Muxy AI Session History — CLI capabilities, Copilot titles, packaging, icons
 
+> ⚠️ **SUPERSEDED** — All `scanner.py` / `manage.py` citations in this document refer to the **removed Python back-end** (deleted as part of the pure-JS host-fs migration). The on-disk formats described are still accurate, but the implementation now lives in `src/lib/sessions/scan/` (JS scanners) and `src/lib/sessions/manage/` (JS manage). References to Python line numbers are kept as historical context only.
+
 > **Errata / authority:** For **Copilot on-disk layout, title chain, and rename**, prefer [04-copilot-session-identity.md](./04-copilot-session-identity.md) (local `data.db` + `session-state` + `workspace.yaml` + `session-store.db` probes). Sections below that say Copilot schema is fully unknown or only `meta.json` are incomplete. For **which sessions are CLI-resumable** (`No session, task, or name matched`), prefer [06-copilot-resume-mismatch.md](./06-copilot-resume-mismatch.md) — directory existence alone is insufficient; need non-empty `events.jsonl` and/or `turns`. For **archive product choice**, locked plan is Muxy-only for all CLIs (including Codex)—see [01-implementation-plan.md](./01-implementation-plan.md).
 
 ## 1. Per-CLI Session Storage & Management Capabilities
