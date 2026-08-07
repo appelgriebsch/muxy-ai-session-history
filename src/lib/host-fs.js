@@ -239,7 +239,7 @@ export function createHostFs(exec) {
 
   /**
    * Map BSD/GNU stat file-type strings to a coarse kind.
-   * Symlinks and specials → "other" (scanners do not follow links).
+   * stat is invoked with -L so symlinks are resolved to their target type.
    * @param {string} typeStr
    * @returns {'file'|'dir'|'other'}
    */
@@ -285,7 +285,8 @@ export function createHostFs(exec) {
   /**
    * List directory entries with kind + mtime (+ size when available).
    * Uses listDir + batched multi-path stat (macOS -f, Linux -c fallback).
-   * Missing dir → []. Symlinks are kind "other".
+   * Symlinks are followed (stat -L): symlink-to-dir → kind "dir", symlink-to-file → kind "file".
+   * Missing dir → [].
    *
    * @param {string} dirPath
    * @returns {Array<{ name: string, kind: 'file'|'dir'|'other', mtimeMs: number, size: number|null }> | Promise<…>}
@@ -308,9 +309,10 @@ export function createHostFs(exec) {
        * @param {boolean} useBsd
        */
       const runChunk = (chunk, useBsd) => {
+        // -L dereferences symlinks so symlink-to-dir reports kind "dir".
         const argv = useBsd
-          ? [HOST_BINS.stat, "-f", "%N\t%HT\t%m\t%z", "--", ...chunk]
-          : [HOST_BINS.stat, "-c", "%n\t%F\t%Y\t%s", "--", ...chunk];
+          ? [HOST_BINS.stat, "-L", "-f", "%N\t%HT\t%m\t%z", "--", ...chunk]
+          : [HOST_BINS.stat, "-L", "-c", "%n\t%F\t%Y\t%s", "--", ...chunk];
         return run(exec, argv, { timeoutMs: 15000 });
       };
 
@@ -448,8 +450,8 @@ export function createHostFs(exec) {
   };
 
   const isDir = (path) => {
-    // ls -ld: first char d
-    return chain(run(exec, [HOST_BINS.ls, "-ld", "--", path], { timeoutMs: 5000 }), (r) => {
+    // ls -ldL: -L dereferences symlinks so symlink-to-dir is treated as a directory.
+    return chain(run(exec, [HOST_BINS.ls, "-ldL", "--", path], { timeoutMs: 5000 }), (r) => {
       if (r.exitCode !== 0) return false;
       const line = r.stdout.trim();
       return line.startsWith("d");
