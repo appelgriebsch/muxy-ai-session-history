@@ -150,9 +150,10 @@ function discoverCopilotSidsForCwd(fs, home, cwd) {
   if (!cwdNorm) return found;
 
   const dbNames = ["session-store.db", "data.db"];
-  // Match normalized path; also raw cwd when slash form differs (DB is index only).
-  const cwdLits = new Set([sqlQuote(cwdNorm)]);
-  if (String(cwd) !== cwdNorm) cwdLits.add(sqlQuote(String(cwd)));
+  // Match common path spellings (DB is an index only; FS re-checks with normPath).
+  const cwdForms = new Set([cwdNorm, String(cwd)]);
+  if (cwdNorm && cwdNorm !== "/") cwdForms.add(`${cwdNorm}/`);
+  const cwdLits = new Set([...cwdForms].map((p) => sqlQuote(p)));
 
   return chain(
     mapSeq(dbNames, (dbName) => {
@@ -399,11 +400,16 @@ function buildCopilotProbeEntries(stateEntries, dbSids) {
     probe.push(entry);
   }
 
-  // 2) Residual: newest unprobed dirs first, hard budget on FS probes only.
+  // 2) Residual: newest unprobed dirs first. Full budget when no DB index hits
+  // (sqlite off / no path columns); smaller residual when DB already selected
+  // candidates so multi-project foreign flood stays cheap (#31 spirit).
   const residual = [...byName.values()]
     .filter((e) => !selected.has(e.name))
     .sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
-  const residualBudget = Math.max(0, COPILOT_MAX_STATE_DIRS);
+  const residualBudget =
+    selected.size > 0
+      ? Math.min(20, COPILOT_MAX_STATE_DIRS)
+      : Math.max(0, COPILOT_MAX_STATE_DIRS);
   for (let i = 0; i < residual.length && i < residualBudget; i++) {
     probe.push(residual[i]);
   }

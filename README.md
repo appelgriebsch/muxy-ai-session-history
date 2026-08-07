@@ -80,7 +80,7 @@ Copilot session dirs live in a **global** `~/.copilot/session-state/` tree (not 
 1. **Index (preferred):** when `sqlite3` is available, query allowlisted path columns on `session-store.db` / `data.db` (`sessions` and `workspaces`) for the active cwd. DB rows are an index only.
 2. **FS evidence:** for each candidate id that still has a `session-state/<id>/` directory, re-read `workspace.yaml` / `meta.json`, require `pathMatchesCwd`, and require resume evidence (non-empty `events.jsonl` and/or `turns` rows).
 3. **Residual budget:** dirs not already selected via the DB are considered in mtime order up to `COPILOT_MAX_STATE_DIRS` (100) expensive probes — so incomplete DBs still find recent sessions without scanning every foreign dir forever.
-4. **No silent 25-cap:** all resumable sessions for the worktree are returned (newest first). The panel “All” view keeps a soft global cap of 80 for *other* providers but **never drops** the cwd-complete Copilot list; the Copilot filter chip shows the full set.
+4. **No silent 25-cap:** all resumable sessions for the worktree are returned (newest first). The panel keeps a soft cap of 80 for *other* providers by recency, independent of Copilot size, and **never drops** the cwd-complete Copilot list (filter chip or All).
 
 Without sqlite (or without path columns), only the residual mtime wave runs — large multi-project homes may underfill older sessions for the active cwd until the DB index is available.
 

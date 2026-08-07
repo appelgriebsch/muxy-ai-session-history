@@ -88,18 +88,15 @@ export async function listAll(cwd, opts = {}) {
     }
   }
 
-  // Soft global cap for the All view: never drop uncapped (cwd-complete) providers.
-  // Remaining slots go to other providers by recency. Filtering to Copilot-only
-  // therefore still shows the full project-complete list.
+  // Soft cap for *non–cwd-complete* providers only (GLOBAL_CAP). Uncapped
+  // providers (Copilot) keep the full project set so filter chips and All
+  // view never drop them. GLOBAL_CAP is never reduced by uncapped size — so
+  // a large Copilot project does not empty Claude/Codex/… chips.
   let groups = buildGroups(installed, sessionsByCli, errorsByCli);
-  const uncappedCount = groups
-    .filter((g) => UNCAPPED_PROVIDERS.has(g.cli))
-    .reduce((n, g) => n + g.sessions.length, 0);
   const otherFlat = flattenSessions(groups)
     .filter((s) => !UNCAPPED_PROVIDERS.has(s.cli))
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-  // Keep all uncapped; cap others to max(0, GLOBAL_CAP - uncappedCount).
-  const otherSlots = Math.max(0, GLOBAL_CAP - uncappedCount);
+  const otherSlots = GLOBAL_CAP;
   if (otherFlat.length > otherSlots) {
     const keep = new Set(
       otherFlat.slice(0, otherSlots).map((s) => `${s.cli}:${s.id}`),

@@ -249,18 +249,17 @@ describe("scan exec budgets (amplification)", () => {
     }
 
     // Expensive probes: listDirDetailed (ls+stat) is cheap; per-dir reads bounded by
-    // project DB set + residual budget (not foreignCount).
+    // project DB set + small residual (DB hits present → residual ≤ 20).
     const catCalls = exec.countWhere((a) => a[0] === "/bin/cat");
     const headCalls = exec.countWhere((a) => a[0] === "/usr/bin/head");
-    // Rough upper bound: each project candidate may cat yaml+meta and head events;
-    // residual may probe up to COPILOT_MAX_STATE_DIRS foreign dirs (yaml/meta only until cwd fail).
-    const maxProbes = projectCount + COPILOT_MAX_STATE_DIRS;
+    const residualWhenDbHits = Math.min(20, COPILOT_MAX_STATE_DIRS);
+    const maxProbes = projectCount + residualWhenDbHits;
     assert.ok(
       catCalls + headCalls <= maxProbes * 4 + 30,
       `expected bounded file reads, got cat=${catCalls} head=${headCalls}`,
     );
     assert.ok(
-      exec.calls.length < 900,
+      exec.calls.length < 500,
       `expected under budget exec count, got ${exec.calls.length}`,
     );
   });
