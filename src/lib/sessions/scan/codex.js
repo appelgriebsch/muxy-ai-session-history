@@ -1,4 +1,4 @@
-import { joinPath, sqlQuote, chain } from "../../host-fs.js";
+import { joinPath, sqlQuote, chain, expandUserPath } from "../../host-fs.js";
 import {
   UUID_RE,
   CODEX_ROLLOUT_RE,
@@ -9,7 +9,23 @@ import {
   sessionRow,
   mapSeq,
   tryChain,
+  normPath,
+  pathMatchesCwd,
 } from "./helpers.js";
+
+/**
+ * cwd forms for SQL equality (DB may store trailing slash / double-slash variants).
+ * @param {string} cwd
+ * @returns {string[]}
+ */
+function cwdSqlForms(cwd) {
+  const cwdNorm = normPath(cwd);
+  const forms = new Set();
+  if (cwdNorm) forms.add(cwdNorm);
+  if (cwd) forms.add(String(cwd));
+  if (cwdNorm && cwdNorm !== "/") forms.add(`${cwdNorm}/`);
+  return [...forms].filter(Boolean);
+}
 
 /**
  * @param {*} fs
@@ -18,16 +34,10 @@ import {
 function resolveCodexHome(fs, opts = {}) {
   if (opts.codexHome) return opts.codexHome;
   return chain(fs.env("CODEX_HOME"), (envHome) => {
-    if (envHome) {
-      if (envHome.startsWith("~")) {
-        const homeP = opts.home != null ? opts.home : fs.homeDir();
-        return chain(homeP, (home) =>
-          joinPath(home, envHome.slice(1).replace(/^\//, "")),
-        );
-      }
-      return envHome;
-    }
     const homeP = opts.home != null ? opts.home : fs.homeDir();
+    if (envHome) {
+      return chain(homeP, (home) => expandUserPath(envHome, home) || envHome);
+    }
     return chain(homeP, (home) => joinPath(home, ".codex"));
   });
 }
@@ -66,10 +76,14 @@ function listCodexDb(fs, home, cwd) {
       const firstCol = cols.has("first_user_message") ? "first_user_message" : "''";
       const branchCol = cols.has("git_branch") ? "git_branch" : "NULL";
 
+      const forms = cwdSqlForms(cwd);
+      if (!forms.length) return [];
+      const cwdPred = forms.map((p) => `cwd = ${sqlQuote(p)}`).join(" OR ");
+
       const sql =
         `SELECT id, ${updatedCol} AS updated, ${titleCol} AS title, ` +
-        `${firstCol} AS first_user, ${branchCol} AS git_branch ` +
-        `FROM threads WHERE cwd = ${sqlQuote(cwd)} ` +
+        `${firstCol} AS first_user, ${branchCol} AS git_branch, cwd AS row_cwd ` +
+        `FROM threads WHERE (${cwdPred}) ` +
         `AND source IN ('cli', 'vscode') ` +
         `ORDER BY ${updatedCol} DESC LIMIT ${PER_GROUP_CAP}`;
 
@@ -79,6 +93,8 @@ function listCodexDb(fs, home, cwd) {
         for (const r of rows) {
           const sid = r.id;
           if (typeof sid !== "string" || !UUID_RE.test(sid)) continue;
+          // Re-check with pathMatchesCwd for any residual spelling drift.
+          if (r.row_cwd != null && !pathMatchesCwd(String(r.row_cwd), cwd)) continue;
           const rawTitle = r.title;
           const firstUser = r.first_user;
           const title =
@@ -145,7 +161,7 @@ function listCodexFiles(fs, home, cwd) {
                     /* continue */
                   }
                 }
-                if (!payload || payload.cwd !== cwd) return null;
+                if (!payload || !pathMatchesCwd(payload.cwd, cwd)) return null;
                 if (
                   payload.source != null &&
                   payload.source !== "cli" &&
@@ -213,8 +229,17 @@ export function listCodex(fs, cwd, opts = {}) {
       return listCodexFiles(fs, home, cwd);
     }
     return chain(listCodexDb(fs, home, cwd), (dbRows) => {
-      if (dbRows != null) return dbRows;
-      return listCodexFiles(fs, home, cwd);
+      // null → DB missing / unusable → always JSONL fallback
+      if (dbRows == null) return listCodexFiles(fs, home, cwd);
+      // Successful empty query: still try JSONL when sessions/ exists
+      // (empty/newer state_N.sqlite must not hide rollouts-only installs).
+      if (dbRows.length === 0) {
+        return chain(fs.isDir(joinPath(home, "sessions")), (hasSessions) => {
+          if (hasSessions) return listCodexFiles(fs, home, cwd);
+          return dbRows;
+        });
+      }
+      return dbRows;
     });
   });
 }

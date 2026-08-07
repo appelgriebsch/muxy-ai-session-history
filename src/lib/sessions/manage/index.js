@@ -1,4 +1,4 @@
-import { joinPath, sqlQuote } from "../../host-fs.js";
+import { joinPath, sqlQuote, expandUserPath } from "../../host-fs.js";
 import { isSafeSessionId } from "../../sanitize.js";
 import { slugify, toPromise, resolveTitleLikeColumn } from "../scan/helpers.js";
 
@@ -124,11 +124,10 @@ async function renameCursor(fs, home, sessionId, newTitle) {
 }
 
 async function renameCodex(fs, home, sessionId, newTitle) {
-  let codexHome = await toPromise(fs.env("CODEX_HOME"));
-  if (!codexHome) codexHome = joinPath(home, ".codex");
-  else if (codexHome.startsWith("~")) {
-    codexHome = joinPath(home, codexHome.slice(1).replace(/^\//, ""));
-  }
+  const envHome = await toPromise(fs.env("CODEX_HOME"));
+  const codexHome = envHome
+    ? expandUserPath(envHome, home) || envHome
+    : joinPath(home, ".codex");
 
   if (!(await toPromise(fs.isDir(codexHome)))) {
     throw new Error("No Codex state database found");
@@ -170,11 +169,10 @@ async function renameCodex(fs, home, sessionId, newTitle) {
 }
 
 async function renameCopilot(fs, home, sessionId, newTitle) {
-  let copilotHome = await toPromise(fs.env("COPILOT_HOME"));
-  if (!copilotHome) copilotHome = joinPath(home, ".copilot");
-  else if (copilotHome.startsWith("~")) {
-    copilotHome = joinPath(home, copilotHome.slice(1).replace(/^\//, ""));
-  }
+  const envHome = await toPromise(fs.env("COPILOT_HOME"));
+  const copilotHome = envHome
+    ? expandUserPath(envHome, home) || envHome
+    : joinPath(home, ".copilot");
 
   let wrote = false;
   const errors = [];
@@ -256,11 +254,10 @@ async function deleteGrok(fs, home, sessionId) {
 }
 
 async function deleteClaude(fs, home, sessionId, cwd) {
-  let base = await toPromise(fs.env("CLAUDE_CONFIG_DIR"));
-  if (!base) base = joinPath(home, ".claude");
-  else if (base.startsWith("~")) {
-    base = joinPath(home, base.slice(1).replace(/^\//, ""));
-  }
+  const envBase = await toPromise(fs.env("CLAUDE_CONFIG_DIR"));
+  const base = envBase
+    ? expandUserPath(envBase, home) || envBase
+    : joinPath(home, ".claude");
   const projects = joinPath(base, "projects");
   if (!(await toPromise(fs.isDir(projects)))) {
     throw new Error("Claude projects directory not found");
@@ -302,12 +299,14 @@ async function deleteCursor(fs, home, sessionId) {
  */
 async function resolveOpenCodeDb(fs, home) {
   const xdg = await toPromise(fs.env("XDG_DATA_HOME"));
-  const dataDir = xdg
-    ? joinPath(xdg, "opencode")
+  const xdgAbs = xdg ? expandUserPath(xdg, home) || xdg : null;
+  const dataDir = xdgAbs
+    ? joinPath(xdgAbs, "opencode")
     : joinPath(home, ".local", "share", "opencode");
   const envDb = await toPromise(fs.env("OPENCODE_DB"));
   if (envDb && envDb !== ":memory:") {
-    if (envDb.startsWith("/")) return envDb;
+    const abs = expandUserPath(envDb, home) || envDb;
+    if (abs.startsWith("/")) return abs;
     return joinPath(dataDir, envDb);
   }
   const primary = joinPath(dataDir, "opencode.db");

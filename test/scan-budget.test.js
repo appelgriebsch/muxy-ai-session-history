@@ -248,19 +248,75 @@ describe("scan exec budgets (amplification)", () => {
       assert.ok(got.has(sid), `missing ${sid}`);
     }
 
-    // Expensive probes: listDirDetailed (ls+stat) is cheap; per-dir reads bounded by
-    // project DB set + small residual (DB hits present → residual ≤ 20).
+    // Expensive probes: listDirDetailed (ls+stat) is cheap; per-dir reads use head
+    // (yaml/meta/events) and skip dual-stat fileSize. Budget = project + residual.
     const catCalls = exec.countWhere((a) => a[0] === "/bin/cat");
     const headCalls = exec.countWhere((a) => a[0] === "/usr/bin/head");
     const residualWhenDbHits = Math.min(20, COPILOT_MAX_STATE_DIRS);
     const maxProbes = projectCount + residualWhenDbHits;
+    // Prefer head over full cat for metadata (P1 exec budget).
     assert.ok(
-      catCalls + headCalls <= maxProbes * 4 + 30,
-      `expected bounded file reads, got cat=${catCalls} head=${headCalls}`,
+      catCalls <= 5,
+      `expected almost no full cat reads, got cat=${catCalls}`,
     );
     assert.ok(
-      exec.calls.length < 500,
+      headCalls <= maxProbes * 3 + 20,
+      `expected bounded head reads, got head=${headCalls}`,
+    );
+    assert.ok(
+      exec.calls.length < 450,
       `expected under budget exec count, got ${exec.calls.length}`,
+    );
+  });
+
+  it("listCopilot N≈40 stays under hard exec ceiling", async () => {
+    const copilotHome = join(home, ".copilot");
+    const state = join(copilotHome, "session-state");
+    mkdirSync(state, { recursive: true });
+    const n = 40;
+    const sql = [
+      `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, branch TEXT, summary TEXT, updated_at TEXT);`,
+      `CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, turn_index INT, user_message TEXT);`,
+    ];
+    function q(v) {
+      if (v == null) return "NULL";
+      return `'${String(v).replace(/'/g, "''")}'`;
+    }
+    for (let i = 0; i < n; i++) {
+      const sid = uuidAt(i);
+      const d = join(state, sid);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        join(d, "workspace.yaml"),
+        `id: ${sid}\ncwd: ${PROJ}\nbranch: main\nname: S ${i}\n`,
+      );
+      writeFileSync(
+        join(d, "events.jsonl"),
+        `{"type":"user.message","data":{"content":"m ${i}"}}\n`,
+      );
+      const t = new Date(2026, 0, 1, 0, 0, i);
+      utimesSync(d, t, t);
+      sql.push(
+        `INSERT INTO sessions VALUES (${q(sid)}, ${q(PROJ)}, 'main', ${q(`S${i}`)}, '2026-01-01T00:00:00Z');`,
+      );
+      sql.push(
+        `INSERT INTO turns (session_id, turn_index, user_message) VALUES (${q(sid)}, 0, 'hi');`,
+      );
+    }
+    const store = join(copilotHome, "session-store.db");
+    spawnSync("/usr/bin/sqlite3", [store, sql.join("\n")], { encoding: "utf8" });
+
+    const exec = countingExec(realExec);
+    const fs = createHostFs(exec);
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome,
+      sqliteAvailable: true,
+    });
+    assert.equal(rows.length, n);
+    // Hard ceiling: listDirDetailed per probe + up to 3 heads; no dual-stat fileSize.
+    assert.ok(
+      exec.calls.length <= 280,
+      `expected ≤280 execs for N=${n}, got ${exec.calls.length}`,
     );
   });
 });

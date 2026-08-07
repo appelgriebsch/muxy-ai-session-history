@@ -1,4 +1,4 @@
-import { joinPath, chain } from "../../host-fs.js";
+import { joinPath, chain, expandUserPath } from "../../host-fs.js";
 import {
   UUID_RE,
   PER_GROUP_CAP,
@@ -72,15 +72,10 @@ export function listClaude(fs, cwd, opts = {}) {
   const baseP = (() => {
     if (opts.claudeConfigDir) return opts.claudeConfigDir;
     return chain(fs.env("CLAUDE_CONFIG_DIR"), (envDir) => {
-      if (envDir) {
-        if (envDir.startsWith("~")) {
-          return chain(fs.homeDir(), (home) =>
-            joinPath(home, envDir.slice(1).replace(/^\//, "")),
-          );
-        }
-        return envDir;
-      }
       const homeP = opts.home != null ? opts.home : fs.homeDir();
+      if (envDir) {
+        return chain(homeP, (home) => expandUserPath(envDir, home) || envDir);
+      }
       return chain(homeP, (home) => joinPath(home, ".claude"));
     });
   })();

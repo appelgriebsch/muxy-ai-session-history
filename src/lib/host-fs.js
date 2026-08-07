@@ -29,6 +29,7 @@ export const REQUIRED_HOST_TOOLS = Object.freeze([
   HOST_BINS.mkdir,
   HOST_BINS.tee,
   HOST_BINS.env,
+  HOST_BINS.printenv,
   HOST_BINS.head,
   HOST_BINS.stat,
 ]);
@@ -47,15 +48,55 @@ export function chain(value, fn) {
 }
 
 /**
+ * Swallow thenable rejections (optional probes must never surface as unhandled).
+ * @param {*} value
+ */
+function swallowRejection(value) {
+  if (value != null && typeof value.then === "function") {
+    value.then(
+      () => {},
+      () => {},
+    );
+  }
+}
+
+/**
  * Normalize muxy.exec / Bun.spawnSync style results.
+ * Missing or non-numeric exit codes fail closed (not success).
  * @param {*} result
  */
 export function normalizeExecResult(result) {
+  if (result == null || typeof result !== "object") {
+    return { stdout: "", stderr: "empty exec result", exitCode: 1 };
+  }
+  const code = result.exitCode ?? result.code;
   return {
-    stdout: String(result?.stdout ?? ""),
-    stderr: String(result?.stderr ?? ""),
-    exitCode: result?.exitCode ?? result?.code ?? 0,
+    stdout: String(result.stdout ?? ""),
+    stderr: String(result.stderr ?? ""),
+    exitCode: typeof code === "number" && Number.isFinite(code) ? code : 1,
   };
+}
+
+/**
+ * Expand `~` / relative env homes to an absolute POSIX path under `home`.
+ * Absolute paths are returned with collapsed slashes (trailing slash stripped except root).
+ * @param {string | null | undefined} path
+ * @param {string} home
+ * @returns {string | null}
+ */
+export function expandUserPath(path, home) {
+  if (path == null || path === "") return null;
+  let s = String(path);
+  if (s.startsWith("~/") || s === "~") {
+    if (!home) return null;
+    s = joinPath(home, s.slice(1).replace(/^\//, ""));
+  } else if (!s.startsWith("/")) {
+    if (!home) return null;
+    s = joinPath(home, s);
+  }
+  s = s.replace(/\/+/g, "/");
+  if (s.length > 1 && s.endsWith("/")) s = s.slice(0, -1);
+  return s || "/";
 }
 
 /**
@@ -104,7 +145,7 @@ export function ensureHostTools(exec, opts = {}) {
 
   const probeOne = (bin) => {
     // Prefer printenv-style existence: ls the binary path itself.
-    return chain(run(exec, [HOST_BINS.ls, bin], { timeoutMs: 5000 }), (r) => {
+    return chain(run(exec, [HOST_BINS.ls, "--", bin], { timeoutMs: 5000 }), (r) => {
       return r.exitCode === 0;
     });
   };
@@ -120,13 +161,13 @@ export function ensureHostTools(exec, opts = {}) {
 
   return chain(start, (ok) => {
     hostToolsCache = Boolean(ok);
-    // Best-effort optional probe (does not flip cache).
+    // Best-effort optional probe (does not flip cache; never unhandled rejection).
     if (ok) {
       for (const bin of optional) {
         try {
-          probeOne(bin);
+          swallowRejection(probeOne(bin));
         } catch {
-          /* ignore */
+          /* ignore sync throws */
         }
       }
     }
@@ -140,7 +181,7 @@ export function ensureHostTools(exec, opts = {}) {
  * @returns {boolean | Promise<boolean>}
  */
 export function hasSqlite3(exec) {
-  return chain(run(exec, [HOST_BINS.ls, HOST_BINS.sqlite3], { timeoutMs: 5000 }), (r) => {
+  return chain(run(exec, [HOST_BINS.ls, "--", HOST_BINS.sqlite3], { timeoutMs: 5000 }), (r) => {
     return r.exitCode === 0;
   });
 }
@@ -154,11 +195,11 @@ export function createHostFs(exec) {
   }
 
   const homeDir = () => {
-    // Prefer printenv HOME; fall back to env -0 printenv.
-    return chain(run(exec, [HOST_BINS.printenv, "HOME"], { timeoutMs: 5000 }), (r) => {
+    // Prefer printenv HOME; fall back to env printenv HOME.
+    return chain(run(exec, [HOST_BINS.printenv, "--", "HOME"], { timeoutMs: 5000 }), (r) => {
       if (r.exitCode === 0 && r.stdout.trim()) return r.stdout.trim();
       return chain(
-        run(exec, [HOST_BINS.env, "printenv", "HOME"], { timeoutMs: 5000 }),
+        run(exec, [HOST_BINS.env, "printenv", "--", "HOME"], { timeoutMs: 5000 }),
         (r2) => {
           assertOk(r2, "homeDir");
           const home = r2.stdout.trim();
@@ -171,7 +212,7 @@ export function createHostFs(exec) {
 
   const env = (name) => {
     if (!name || typeof name !== "string") throw new Error("env: invalid name");
-    return chain(run(exec, [HOST_BINS.printenv, name], { timeoutMs: 5000 }), (r) => {
+    return chain(run(exec, [HOST_BINS.printenv, "--", name], { timeoutMs: 5000 }), (r) => {
       if (r.exitCode !== 0) return null;
       const v = r.stdout.replace(/\n$/, "");
       return v === "" ? null : v;
@@ -181,7 +222,7 @@ export function createHostFs(exec) {
   const listDir = (dirPath) => {
     if (!dirPath) throw new Error("listDir: path required");
     return chain(
-      run(exec, [HOST_BINS.ls, "-1A", dirPath], { timeoutMs: 10000 }),
+      run(exec, [HOST_BINS.ls, "-1A", "--", dirPath], { timeoutMs: 10000 }),
       (r) => {
         if (r.exitCode !== 0) {
           // Missing directory → empty list (callers decide).
@@ -312,7 +353,7 @@ export function createHostFs(exec) {
 
   const readText = (filePath) => {
     if (!filePath) throw new Error("readText: path required");
-    return chain(run(exec, [HOST_BINS.cat, filePath], { timeoutMs: 20000 }), (r) => {
+    return chain(run(exec, [HOST_BINS.cat, "--", filePath], { timeoutMs: 20000 }), (r) => {
       if (r.exitCode !== 0) {
         if (/No such file|not found|ENOENT/i.test(r.stderr + r.stdout)) {
           throw new Error(`readText: not found: ${filePath}`);
@@ -332,7 +373,11 @@ export function createHostFs(exec) {
     if (!filePath) throw new Error("readHead: path required");
     const maxBytes = Math.max(1, Number(opts.maxBytes) || 65536);
     return chain(
-      run(exec, [HOST_BINS.head, "-c", String(maxBytes), filePath], { timeoutMs: 15000 }),
+      run(
+        exec,
+        [HOST_BINS.head, "-c", String(maxBytes), "--", filePath],
+        { timeoutMs: 15000 },
+      ),
       (r) => {
         if (r.exitCode !== 0) {
           if (/No such file|not found|ENOENT/i.test(r.stderr + r.stdout)) {
@@ -352,14 +397,14 @@ export function createHostFs(exec) {
   const fileSize = (filePath) => {
     // macOS: stat -f %z ; Linux: stat -c %s
     return chain(
-      run(exec, [HOST_BINS.stat, "-f", "%z", filePath], { timeoutMs: 5000 }),
+      run(exec, [HOST_BINS.stat, "-f", "%z", "--", filePath], { timeoutMs: 5000 }),
       (r) => {
         if (r.exitCode === 0) {
           const n = Number(r.stdout.trim());
           return Number.isFinite(n) ? n : 0;
         }
         return chain(
-          run(exec, [HOST_BINS.stat, "-c", "%s", filePath], { timeoutMs: 5000 }),
+          run(exec, [HOST_BINS.stat, "-c", "%s", "--", filePath], { timeoutMs: 5000 }),
           (r2) => {
             if (r2.exitCode !== 0) return 0;
             const n = Number(r2.stdout.trim());
@@ -377,14 +422,14 @@ export function createHostFs(exec) {
   const mtimeMs = (filePath) => {
     // macOS: %m is seconds; Linux: %Y
     return chain(
-      run(exec, [HOST_BINS.stat, "-f", "%m", filePath], { timeoutMs: 5000 }),
+      run(exec, [HOST_BINS.stat, "-f", "%m", "--", filePath], { timeoutMs: 5000 }),
       (r) => {
         if (r.exitCode === 0) {
           const sec = Number(r.stdout.trim());
           return Number.isFinite(sec) ? Math.trunc(sec * 1000) : 0;
         }
         return chain(
-          run(exec, [HOST_BINS.stat, "-c", "%Y", filePath], { timeoutMs: 5000 }),
+          run(exec, [HOST_BINS.stat, "-c", "%Y", "--", filePath], { timeoutMs: 5000 }),
           (r2) => {
             if (r2.exitCode !== 0) return 0;
             const sec = Number(r2.stdout.trim());
@@ -396,12 +441,15 @@ export function createHostFs(exec) {
   };
 
   const exists = (path) => {
-    return chain(run(exec, [HOST_BINS.ls, path], { timeoutMs: 5000 }), (r) => r.exitCode === 0);
+    return chain(
+      run(exec, [HOST_BINS.ls, "--", path], { timeoutMs: 5000 }),
+      (r) => r.exitCode === 0,
+    );
   };
 
   const isDir = (path) => {
     // ls -ld: first char d
-    return chain(run(exec, [HOST_BINS.ls, "-ld", path], { timeoutMs: 5000 }), (r) => {
+    return chain(run(exec, [HOST_BINS.ls, "-ld", "--", path], { timeoutMs: 5000 }), (r) => {
       if (r.exitCode !== 0) return false;
       const line = r.stdout.trim();
       return line.startsWith("d");
@@ -409,7 +457,7 @@ export function createHostFs(exec) {
   };
 
   const isFile = (path) => {
-    return chain(run(exec, [HOST_BINS.ls, "-ld", path], { timeoutMs: 5000 }), (r) => {
+    return chain(run(exec, [HOST_BINS.ls, "-ld", "--", path], { timeoutMs: 5000 }), (r) => {
       if (r.exitCode !== 0) return false;
       const line = r.stdout.trim();
       // regular file: '-' ; avoid directories and symlinks (l)
@@ -420,7 +468,7 @@ export function createHostFs(exec) {
   const mkdirP = (dirPath) => {
     if (!dirPath) throw new Error("mkdirP: path required");
     return chain(
-      run(exec, [HOST_BINS.mkdir, "-p", dirPath], { timeoutMs: 10000 }),
+      run(exec, [HOST_BINS.mkdir, "-p", "--", dirPath], { timeoutMs: 10000 }),
       (r) => {
         assertOk(r, `mkdirP ${dirPath}`);
         return true;
@@ -445,24 +493,27 @@ export function createHostFs(exec) {
         : true;
 
     return chain(ensureParent, () =>
-      chain(run(exec, [HOST_BINS.tee, tmp], { stdin: text, timeoutMs: 15000 }), (r) => {
-        assertOk(r, `writeAtomic tee ${tmp}`);
-        return chain(
-          run(exec, [HOST_BINS.mv, "-f", tmp, filePath], { timeoutMs: 10000 }),
-          (r2) => {
-            if (r2.exitCode !== 0) {
-              // Best-effort cleanup of tmp
-              try {
-                run(exec, [HOST_BINS.rm, "-f", tmp], { timeoutMs: 5000 });
-              } catch {
-                /* ignore */
+      chain(
+        run(exec, [HOST_BINS.tee, "--", tmp], { stdin: text, timeoutMs: 15000 }),
+        (r) => {
+          assertOk(r, `writeAtomic tee ${tmp}`);
+          return chain(
+            run(exec, [HOST_BINS.mv, "-f", "--", tmp, filePath], { timeoutMs: 10000 }),
+            (r2) => {
+              if (r2.exitCode !== 0) {
+                // Best-effort cleanup of tmp
+                try {
+                  run(exec, [HOST_BINS.rm, "-f", "--", tmp], { timeoutMs: 5000 });
+                } catch {
+                  /* ignore */
+                }
+                assertOk(r2, `writeAtomic mv ${filePath}`);
               }
-              assertOk(r2, `writeAtomic mv ${filePath}`);
-            }
-            return true;
-          },
-        );
-      }),
+              return true;
+            },
+          );
+        },
+      ),
     );
   };
 
@@ -486,10 +537,13 @@ export function createHostFs(exec) {
         throw new Error("removePath: path outside allowed root");
       }
     }
-    return chain(run(exec, [HOST_BINS.rm, "-rf", path], { timeoutMs: 20000 }), (r) => {
-      assertOk(r, `removePath ${path}`);
-      return true;
-    });
+    return chain(
+      run(exec, [HOST_BINS.rm, "-rf", "--", path], { timeoutMs: 20000 }),
+      (r) => {
+        assertOk(r, `removePath ${path}`);
+        return true;
+      },
+    );
   };
 
   /**
@@ -502,9 +556,10 @@ export function createHostFs(exec) {
     if (!dbPath) throw new Error("sqliteQuery: dbPath required");
     if (!sql) throw new Error("sqliteQuery: sql required");
     const readonly = opts.readonly !== false;
+    // Options first, then --, then database path + SQL so flag-shaped paths are safe.
     const argv = readonly
-      ? [HOST_BINS.sqlite3, "-readonly", "-json", dbPath, sql]
-      : [HOST_BINS.sqlite3, "-json", dbPath, sql];
+      ? [HOST_BINS.sqlite3, "-readonly", "-json", "--", dbPath, sql]
+      : [HOST_BINS.sqlite3, "-json", "--", dbPath, sql];
     return chain(run(exec, argv, { timeoutMs: 20000 }), (r) => {
       if (r.exitCode !== 0) {
         throw new Error(
@@ -531,7 +586,7 @@ export function createHostFs(exec) {
     if (!dbPath) throw new Error("sqliteExec: dbPath required");
     if (!sql) throw new Error("sqliteExec: sql required");
     return chain(
-      run(exec, [HOST_BINS.sqlite3, dbPath, sql], { timeoutMs: 20000 }),
+      run(exec, [HOST_BINS.sqlite3, "--", dbPath, sql], { timeoutMs: 20000 }),
       (r) => {
         if (r.exitCode !== 0) {
           throw new Error(

@@ -39,14 +39,13 @@ await esbuild.build({
 });
 
 const built = await readFile(pickerOut, "utf8");
-// Guard rails: no bare ESM, no python3 runtime.
-if (/\bimport\s+/.test(built) && !built.includes("/*")) {
-  // esbuild IIFE should not leave import statements; fail if present at start of lines.
-  if (/^\s*import\s+/m.test(built)) {
-    throw new Error("resume-picker.built.js still contains ESM import statements");
-  }
+// Guard rails: no bare ESM import/export statements, no python3 runtime.
+// Match real statements at line start (ignore comments / string noise).
+// Do NOT short-circuit on `/*` — IIFE output always contains block comments.
+if (/^\s*import\s+/m.test(built)) {
+  throw new Error("resume-picker.built.js still contains ESM import statements");
 }
-if (/\bexport\s+/.test(built) && /^\s*export\s+/m.test(built)) {
+if (/^\s*export\s+/m.test(built)) {
   throw new Error("resume-picker.built.js still contains ESM export statements");
 }
 if (/\bpython3\b/.test(built)) {

@@ -1,4 +1,4 @@
-import { joinPath, chain } from "../../host-fs.js";
+import { joinPath, chain, expandUserPath } from "../../host-fs.js";
 import {
   PER_GROUP_CAP,
   normPath,
@@ -17,8 +17,13 @@ const SES_ID_RE = /^ses_[0-9a-zA-Z._-]{4,120}$/;
 export function resolveOpenCodeDataDir(fs, opts = {}) {
   if (opts.dataDir) return opts.dataDir;
   return chain(fs.env("XDG_DATA_HOME"), (xdg) => {
-    if (xdg) return joinPath(xdg, "opencode");
     const homeP = opts.home != null ? opts.home : fs.homeDir();
+    if (xdg) {
+      return chain(homeP, (home) => {
+        const base = expandUserPath(xdg, home) || xdg;
+        return joinPath(base, "opencode");
+      });
+    }
     return chain(homeP, (home) => joinPath(home, ".local", "share", "opencode"));
   });
 }

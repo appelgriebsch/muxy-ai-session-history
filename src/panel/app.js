@@ -56,6 +56,8 @@ export class SessionsPanel {
     this.startMenuOpen = false;
     this._pendingFocus = null;
     this._lastEditedKey = null;
+    /** Stable aria-live region (not recreated filled on every render). */
+    this._liveRegion = null;
     this._startMenuDocListener = null;
   }
 
@@ -365,6 +367,18 @@ export class SessionsPanel {
     this.render();
   }
 
+  /** Visible session keys in display order (for post-delete focus neighbor). */
+  _visibleSessionKeys() {
+    const visible = filterGroups(this.groups, this.filter);
+    const sessions =
+      this.filter === "all"
+        ? visible
+            .flatMap((g) => g.sessions)
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        : visible.flatMap((g) => g.sessions);
+    return sessions.map((s) => sessionRowKey(s.cli, s.id));
+  }
+
   async confirmDelete() {
     if (!this.confirmingDeleteKey || this.busyId) return;
     const key = this.confirmingDeleteKey;
@@ -374,15 +388,29 @@ export class SessionsPanel {
       this.render();
       return;
     }
+    const keys = this._visibleSessionKeys();
+    const idx = keys.indexOf(key);
+    const neighborKey =
+      (idx >= 0 && keys[idx + 1]) || (idx > 0 && keys[idx - 1]) || null;
+
     this.busyId = key;
     this.render();
     try {
       await deleteSession(session.cli, session.id, this.cwd);
-      this._lastEditedKey = key;
       this.confirmingDeleteKey = null;
-      this.busyId = null;
       await this.relistQuiet();
-      this._pendingFocus = "row";
+      this.busyId = null;
+      // Prefer neighbor still present after re-list; else Start chevron / empty Start.
+      const stillThere =
+        neighborKey &&
+        findSessionByKey(neighborKey, this.groups) != null;
+      if (stillThere) {
+        this._lastEditedKey = neighborKey;
+        this._pendingFocus = "row";
+      } else {
+        this._lastEditedKey = null;
+        this._pendingFocus = this.installed.length ? "start-chevron" : null;
+      }
       this.render();
     } catch (err) {
       try {
@@ -447,17 +475,57 @@ export class SessionsPanel {
   }
 
 
+  /** Text for the stable aria-live region (only updates when content changes). */
+  _liveStatusText() {
+    const parts = [];
+    if (this.loading && !this.groups.length) parts.push("Loading sessions…");
+    if (this.refreshing) parts.push("Refreshing…");
+    if (this.error) parts.push(this.error);
+    return parts.join(" · ");
+  }
+
+  _ensureShell() {
+    if (!this._liveRegion || !this._liveRegion.isConnected) {
+      this._liveRegion = h("div", {
+        role: "status",
+        "aria-live": "polite",
+        "aria-atomic": "true",
+        "data-panel-live": "true",
+        class: "sr-only",
+      });
+    }
+    let viewHost = this.root.querySelector("[data-panel-view]");
+    if (!viewHost) {
+      clear(this.root);
+      viewHost = h("div", {
+        "data-panel-view": "true",
+        class: "h-full min-h-0",
+      });
+      this.root.appendChild(this._liveRegion);
+      this.root.appendChild(viewHost);
+    } else if (!this._liveRegion.isConnected) {
+      this.root.insertBefore(this._liveRegion, viewHost);
+    }
+    return viewHost;
+  }
+
   render() {
-    clear(this.root);
-    this.root.appendChild(this.view());
+    const viewHost = this._ensureShell();
+    clear(viewHost);
+    viewHost.appendChild(this.view());
+    const liveText = this._liveStatusText();
+    if (this._liveRegion && this._liveRegion.textContent !== liveText) {
+      this._liveRegion.textContent = liveText;
+    }
     this._applyPendingFocus();
   }
 
   _applyPendingFocus() {
     const intent = this._pendingFocus;
     this._pendingFocus = null;
+    const scope = this.root.querySelector("[data-panel-view]") || this.root;
     if (intent === "input" && this.editingKey) {
-      const input = this.root.querySelector(
+      const input = scope.querySelector(
         `input[data-edit-key="${dataKeyAttr(this.editingKey)}"]`,
       );
       if (input) {
@@ -467,7 +535,7 @@ export class SessionsPanel {
       return;
     }
     if (intent === "delete-confirm" && this.confirmingDeleteKey) {
-      const btn = this.root.querySelector(
+      const btn = scope.querySelector(
         `button[data-delete-confirm="${dataKeyAttr(this.confirmingDeleteKey)}"]`,
       );
       btn?.focus();
@@ -476,21 +544,32 @@ export class SessionsPanel {
     if (intent === "row") {
       const key = this._lastEditedKey;
       if (!key) return;
-      const btn = this.root.querySelector(
+      const btn = scope.querySelector(
         `button[data-session-key="${dataKeyAttr(key)}"]`,
       );
-      btn?.focus();
+      if (btn) {
+        btn.focus();
+        return;
+      }
+      // Deleted row gone: fall back to Start chevron or first filter chip.
+      scope.querySelector("button[data-start-chevron]")?.focus() ||
+        scope.querySelector("button[aria-pressed]")?.focus();
       return;
     }
     if (intent === "start-chevron") {
-      this.root.querySelector("button[data-start-chevron]")?.focus();
+      scope.querySelector("button[data-start-chevron]")?.focus() ||
+        scope
+          .querySelector(
+            "button.h-7.rounded-md.bg-primary, button[data-start-main]",
+          )
+          ?.focus();
       return;
     }
     if (intent === "start-menu-item") {
-      const selected = this.root.querySelector(
+      const selected = scope.querySelector(
         "[data-start-menu] [aria-selected='true']",
       );
-      (selected ?? this.root.querySelector("[data-start-menu] button"))?.focus();
+      (selected ?? scope.querySelector("[data-start-menu] button"))?.focus();
     }
   }
 
@@ -1003,13 +1082,20 @@ export class SessionsPanel {
     );
   }
 
-  statusLine(text) {
+  /**
+   * Visual status line (soft per-CLI vs hard host/global errors).
+   * Announcements use the stable `_liveRegion`, not recreated live regions.
+   * @param {string} text
+   * @param {{ hard?: boolean }} [opts]
+   */
+  statusLine(text, opts = {}) {
+    const hard = Boolean(opts.hard);
     return h(
       "div",
       {
-        role: "status",
-        "aria-live": "polite",
-        class: "px-2 py-1 text-[11px] text-muted-foreground",
+        class: hard
+          ? "px-2 py-1 text-[11px] font-medium text-destructive"
+          : "px-2 py-1 text-[11px] text-muted-foreground",
       },
       text,
     );
@@ -1017,10 +1103,21 @@ export class SessionsPanel {
 
   statusBanner() {
     const parts = [];
-    if (this.refreshing) parts.push("Refreshing…");
-    if (this.error && this.groups.length) parts.push(this.error);
+    if (this.refreshing) {
+      parts.push(
+        h(
+          "div",
+          { class: "px-2 py-1 text-[11px] text-muted-foreground" },
+          "Refreshing…",
+        ),
+      );
+    }
+    if (this.error && this.groups.length) {
+      // Host/global errors are hard failures even when SWR keeps prior list.
+      parts.push(this.statusLine(this.error, { hard: true }));
+    }
     if (!parts.length) return null;
-    return this.statusLine(parts.join(" · "));
+    return h("div", { class: "flex flex-col gap-0.5" }, ...parts);
   }
 
   emptyState(message, showStart = false) {
@@ -1028,8 +1125,6 @@ export class SessionsPanel {
     return h(
       "div",
       {
-        role: "status",
-        "aria-live": "polite",
         class:
           "flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-[12px] text-muted-foreground",
       },
@@ -1039,6 +1134,7 @@ export class SessionsPanel {
             "button",
             {
               type: "button",
+              "data-start-main": "true",
               class:
                 "h-7 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground",
               onclick: () => this.startNew(),

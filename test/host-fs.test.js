@@ -8,6 +8,8 @@ import {
   createHostFs,
   ensureHostTools,
   resetHostToolsProbe,
+  normalizeExecResult,
+  expandUserPath,
   HOST_BINS,
   sqlQuote,
   joinPath,
@@ -41,12 +43,30 @@ function mockExec(handlers) {
 describe("host-fs mock argv contracts", () => {
   beforeEach(() => resetHostToolsProbe());
 
-  it("readText uses /bin/cat", async () => {
+  it("normalizeExecResult fails closed for missing/non-numeric codes", () => {
+    assert.equal(normalizeExecResult(undefined).exitCode, 1);
+    assert.equal(normalizeExecResult(null).exitCode, 1);
+    assert.equal(normalizeExecResult({}).exitCode, 1);
+    assert.equal(normalizeExecResult({ stdout: "x" }).exitCode, 1);
+    assert.equal(normalizeExecResult({ exitCode: 0 }).exitCode, 0);
+    assert.equal(normalizeExecResult({ code: 2 }).exitCode, 2);
+    assert.equal(normalizeExecResult({ exitCode: "0" }).exitCode, 1);
+  });
+
+  it("expandUserPath resolves ~ and relative under home", () => {
+    assert.equal(expandUserPath("~/foo", "/Users/a"), "/Users/a/foo");
+    assert.equal(expandUserPath("rel", "/Users/a"), "/Users/a/rel");
+    assert.equal(expandUserPath("/abs/x", "/Users/a"), "/abs/x");
+    assert.equal(expandUserPath("/abs/x/", "/Users/a"), "/abs/x");
+    assert.equal(expandUserPath(null, "/Users/a"), null);
+  });
+
+  it("readText uses /bin/cat with -- before path", async () => {
     const exec = mockExec([
       {
         match: (argv) => argv[0] === HOST_BINS.cat,
         handle: (argv) => {
-          assert.equal(argv[1], "/tmp/x");
+          assert.deepEqual(argv, [HOST_BINS.cat, "--", "/tmp/x"]);
           return { stdout: "hello", stderr: "", exitCode: 0 };
         },
       },
@@ -55,12 +75,23 @@ describe("host-fs mock argv contracts", () => {
     assert.equal(await fs.readText("/tmp/x"), "hello");
   });
 
-  it("readHead uses /usr/bin/head -c", async () => {
+  it("readText treats missing exitCode as failure", () => {
+    const exec = mockExec([
+      {
+        match: (argv) => argv[0] === HOST_BINS.cat,
+        handle: () => ({ stdout: "", stderr: "" }),
+      },
+    ]);
+    const fs = createHostFs(exec);
+    assert.throws(() => fs.readText("/tmp/x"), /exit 1|readText/i);
+  });
+
+  it("readHead uses /usr/bin/head -c with -- before path", async () => {
     const exec = mockExec([
       {
         match: (argv) => argv[0] === HOST_BINS.head,
         handle: (argv) => {
-          assert.deepEqual(argv.slice(0, 3), [HOST_BINS.head, "-c", "100"]);
+          assert.deepEqual(argv, [HOST_BINS.head, "-c", "100", "--", "/f"]);
           return { stdout: "ab", stderr: "", exitCode: 0 };
         },
       },
@@ -122,20 +153,38 @@ describe("host-fs mock argv contracts", () => {
     assert.equal(rows[0].id, "1");
   });
 
-  it("ensureHostTools probes required binaries via ls", async () => {
+  it("ensureHostTools probes required binaries via ls (incl. printenv)", async () => {
     const probed = [];
     const exec = mockExec([
       {
         match: (argv) => argv[0] === HOST_BINS.ls,
         handle: (argv) => {
-          probed.push(argv[1]);
-          return { stdout: argv[1], stderr: "", exitCode: 0 };
+          // argv: [ls, --, bin]
+          const bin = argv[argv.length - 1];
+          probed.push(bin);
+          return { stdout: bin, stderr: "", exitCode: 0 };
         },
       },
     ]);
     assert.equal(await ensureHostTools(exec), true);
     assert.ok(probed.includes(HOST_BINS.cat));
     assert.ok(probed.includes(HOST_BINS.ls));
+    assert.ok(probed.includes(HOST_BINS.printenv));
+  });
+
+  it("ensureHostTools optional probe rejection does not throw", async () => {
+    const exec = (argv) => {
+      if (argv[0] === HOST_BINS.ls && argv.includes(HOST_BINS.sqlite3)) {
+        return Promise.reject(new Error("spawn failed"));
+      }
+      if (argv[0] === HOST_BINS.ls) {
+        return Promise.resolve({ stdout: "ok", stderr: "", exitCode: 0 });
+      }
+      return Promise.resolve({ stdout: "", stderr: "", exitCode: 1 });
+    };
+    assert.equal(await ensureHostTools(exec), true);
+    // Give microtask queue a tick so swallowed rejection would surface if unhandled.
+    await new Promise((r) => setTimeout(r, 10));
   });
 
   it("sqlQuote escapes single quotes", () => {

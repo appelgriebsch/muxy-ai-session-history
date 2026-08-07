@@ -1,4 +1,4 @@
-import { joinPath, chain, sqlQuote } from "../../host-fs.js";
+import { joinPath, chain, sqlQuote, expandUserPath } from "../../host-fs.js";
 import { isSafeSessionId, isCopilotStubId } from "../../sanitize.js";
 import {
   COPILOT_MAX_STATE_DIRS,
@@ -45,16 +45,10 @@ const TURN_SID_COL_CANDIDATES = ["session_id", "sessionId", "id"];
 function resolveCopilotHome(fs, opts = {}) {
   if (opts.copilotHome) return opts.copilotHome;
   return chain(fs.env("COPILOT_HOME"), (envHome) => {
-    if (envHome) {
-      if (envHome.startsWith("~")) {
-        const homeP = opts.home != null ? opts.home : fs.homeDir();
-        return chain(homeP, (home) =>
-          joinPath(home, envHome.slice(1).replace(/^\//, "")),
-        );
-      }
-      return envHome;
-    }
     const homeP = opts.home != null ? opts.home : fs.homeDir();
+    if (envHome) {
+      return chain(homeP, (home) => expandUserPath(envHome, home) || envHome);
+    }
     return chain(homeP, (home) => joinPath(home, ".copilot"));
   });
 }
@@ -430,52 +424,74 @@ function probeCopilotStateDir(fs, state, entry, cwd, turnIds, store) {
   const sid = entry.name;
   const child = joinPath(state, sid);
   const wsPath = joinPath(child, "workspace.yaml");
+  const metaPath = joinPath(child, "meta.json");
+  const eventsPath = joinPath(child, "events.jsonl");
 
-  return chain(tryChain(() => fs.readText(wsPath), null), (yamlText) => {
-    let sessionCwd = null;
-    let branch = null;
-    let yamlName = null;
-    if (yamlText) {
-      try {
-        const yamlData = parseSimpleYaml(yamlText);
-        sessionCwd = yamlData.cwd || yamlData.path || null;
-        branch = yamlData.branch || yamlData.git_branch || null;
-        yamlName = yamlData.name || yamlData.title || null;
-      } catch {
-        /* ignore */
-      }
-    }
+  // One listDirDetailed for events size (avoids dual-stat fileSize) + capped heads.
+  return chain(tryChain(() => fs.listDirDetailed(child), []), (childEntries) => {
+    const byName = new Map((childEntries || []).map((e) => [e.name, e]));
+    const eventsMeta = byName.get("events.jsonl");
+    // When size is unknown (null), still treat a file-kind entry as present.
+    const eventsLikely =
+      eventsMeta &&
+      eventsMeta.kind === "file" &&
+      (eventsMeta.size == null || eventsMeta.size > 0);
+    const hasTurns = turnIds.has(sid);
 
-    const metaPath = joinPath(child, "meta.json");
-    return chain(tryChain(() => fs.readText(metaPath), null), (metaText) => {
-      let metaTitle = null;
-      if (metaText) {
+    // Cheap admission: need turns or an events file before reading yaml/meta.
+    if (!eventsLikely && !hasTurns) return null;
+
+    const yamlP = byName.has("workspace.yaml")
+      ? tryChain(() => fs.readHead(wsPath, { maxBytes: 64_000 }), null)
+      : null;
+    const metaP = byName.has("meta.json")
+      ? tryChain(() => fs.readHead(metaPath, { maxBytes: 64_000 }), null)
+      : null;
+
+    return chain(yamlP, (yamlText) => {
+      let sessionCwd = null;
+      let branch = null;
+      let yamlName = null;
+      if (yamlText) {
         try {
-          const data = JSON.parse(metaText);
-          if (data && typeof data === "object") {
-            metaTitle = data.title || data.name || null;
-            if (!sessionCwd && typeof data.cwd === "string") {
-              sessionCwd = data.cwd;
-            }
-            if (!branch && typeof data.branch === "string") {
-              branch = data.branch;
-            }
-          }
+          const yamlData = parseSimpleYaml(yamlText);
+          sessionCwd = yamlData.cwd || yamlData.path || null;
+          branch = yamlData.branch || yamlData.git_branch || null;
+          yamlName = yamlData.name || yamlData.title || null;
         } catch {
           /* ignore */
         }
       }
 
-      // FS re-check: DB path columns are an index only.
-      if (!sessionCwd || !pathMatchesCwd(sessionCwd, cwd)) return null;
+      return chain(metaP, (metaText) => {
+        let metaTitle = null;
+        if (metaText) {
+          try {
+            const data = JSON.parse(metaText);
+            if (data && typeof data === "object") {
+              metaTitle = data.title || data.name || null;
+              if (!sessionCwd && typeof data.cwd === "string") {
+                sessionCwd = data.cwd;
+              }
+              if (!branch && typeof data.branch === "string") {
+                branch = data.branch;
+              }
+            }
+          } catch {
+            /* ignore */
+          }
+        }
 
-      const eventsPath = joinPath(child, "events.jsonl");
-      return chain(tryChain(() => fs.fileSize(eventsPath), 0), (size) => {
-        const hasEvents = size > 0;
-        const hasTurns = turnIds.has(sid);
-        if (!hasEvents && !hasTurns) return null;
+        // FS re-check: DB path columns are an index only.
+        if (!sessionCwd || !pathMatchesCwd(sessionCwd, cwd)) return null;
 
-        const firstUserP = hasEvents
+        const sizeKnown = eventsMeta?.size;
+        const hasEventsFinal =
+          eventsMeta?.kind === "file" &&
+          (sizeKnown == null ? true : sizeKnown > 0);
+        if (!hasEventsFinal && !hasTurns) return null;
+
+        const firstUserP = hasEventsFinal
           ? chain(
               tryChain(() => fs.readHead(eventsPath, { maxBytes: 256_000 }), null),
               (head) => (head != null ? firstUserMessageFromEvents(head) : null),

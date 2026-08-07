@@ -295,6 +295,62 @@ describe("listCodex", () => {
     assert.equal(rows[0].id, SID);
     assert.equal(rows[0].branch, "dev");
   });
+
+  it("matches cwd with trailing slash (normPath)", async () => {
+    const codex = join(home, ".codex");
+    mkdirSync(codex, { recursive: true });
+    const db = join(codex, "state_1.sqlite");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        db,
+        `CREATE TABLE threads (
+          id TEXT, source TEXT, cwd TEXT, title TEXT, first_user_message TEXT,
+          git_branch TEXT, updated_at_ms INTEGER, archived INTEGER
+        );
+        INSERT INTO threads VALUES (
+          '${SID}', 'cli', '${PROJ}/', 'Slash Title', NULL, 'main', 1700000000000, 0
+        );`,
+      ],
+      { encoding: "utf8" },
+    );
+    const fs = createHostFs(realExec);
+    const rows = await listCodex(fs, PROJ, { codexHome: codex, sqliteAvailable: true });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, "Slash Title");
+  });
+
+  it("falls back to JSONL when DB is valid but empty for cwd", async () => {
+    const codex = join(home, ".codex");
+    mkdirSync(codex, { recursive: true });
+    const db = join(codex, "state_1.sqlite");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        db,
+        `CREATE TABLE threads (
+          id TEXT, source TEXT, cwd TEXT, title TEXT, first_user_message TEXT,
+          git_branch TEXT, updated_at_ms INTEGER, archived INTEGER
+        );`,
+      ],
+      { encoding: "utf8" },
+    );
+    const dir = join(codex, "sessions", "2026");
+    mkdirSync(dir, { recursive: true });
+    const fname = `rollout-2026-08-06T12-00-00-${SID}.jsonl`;
+    writeFileSync(
+      join(dir, fname),
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id: SID, cwd: PROJ, source: "cli", git: { branch: "roll" } },
+      }) + "\n",
+    );
+    const fs = createHostFs(realExec);
+    const rows = await listCodex(fs, PROJ, { codexHome: codex, sqliteAvailable: true });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    assert.equal(rows[0].branch, "roll");
+  });
 });
 
 describe("buildCopilotProbeEntries", () => {
