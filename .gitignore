@@ -1,7 +1,7 @@
 .DS_Store
+.sublime/
 node_modules/
 dist/
 *.log
 scripts/resume-picker.built.js
-__pycache__
 package-lock.json

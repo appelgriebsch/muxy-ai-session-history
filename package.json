@@ -88,6 +88,18 @@
         "tooltip": "AI Sessions",
         "command": "toggle-sessions"
       }
-    ]
+    ],
+    "marketplace": {
+      "author": "Appelgriebsch",
+      "github": "appelgriebsch",
+      "categories": [
+        "productivity",
+        "ai"
+      ],
+      "icon": "assets/icon.svg",
+      "screenshots": [
+        "assets/screenshot-1.png"
+      ]
+    }
   }
 }
