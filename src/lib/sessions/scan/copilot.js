@@ -2,6 +2,8 @@ import { joinPath, sqlQuote } from "../../host-fs.js";
 import { isSafeSessionId, isCopilotStubId } from "../../sanitize.js";
 import {
   PER_GROUP_CAP,
+  SCAN_CONCURRENCY,
+  COPILOT_MAX_STATE_DIRS,
   isoToMs,
   sessionRow,
   parseSimpleYaml,
@@ -11,6 +13,7 @@ import {
   resolveTitleLikeColumn,
   toPromise,
   mapPool,
+  takeRecent,
 } from "./helpers.js";
 
 /**
@@ -22,12 +25,12 @@ async function resolveCopilotHome(fs, opts = {}) {
   const envHome = await toPromise(fs.env("COPILOT_HOME"));
   if (envHome) {
     if (envHome.startsWith("~")) {
-      const home = await toPromise(fs.homeDir());
+      const home = opts.home ?? (await toPromise(fs.homeDir()));
       return joinPath(home, envHome.slice(1).replace(/^\//, ""));
     }
     return envHome;
   }
-  return joinPath(await toPromise(fs.homeDir()), ".copilot");
+  return joinPath(opts.home ?? (await toPromise(fs.homeDir())), ".copilot");
 }
 
 /**
@@ -248,48 +251,49 @@ export async function listCopilot(fs, cwd, opts = {}) {
   }
 
   const state = joinPath(home, "session-state");
-  if (await toPromise(fs.isDir(state))) {
-    let children;
-    try {
-      children = await toPromise(fs.listDir(state));
-    } catch {
-      children = [];
-    }
+  let stateEntries = [];
+  try {
+    stateEntries = await toPromise(fs.listDirDetailed(state));
+  } catch {
+    stateEntries = [];
+  }
+  if (stateEntries.length) {
+    // Mtime-ordered cap: prefer recent session dirs (cwd filter still applies).
+    const children = takeRecent(stateEntries, {
+      limit: COPILOT_MAX_STATE_DIRS,
+      kind: "dir",
+      nameOk: (name) => isSafeSessionId(name) && !isCopilotStubId(name),
+    });
 
-    await mapPool(children, 16, async (name) => {
+    await mapPool(children, SCAN_CONCURRENCY, async (entry) => {
+      const name = entry.name;
       const child = joinPath(state, name);
-      if (!(await toPromise(fs.isDir(child)))) return;
       const sid = name;
-      if (!isSafeSessionId(sid) || isCopilotStubId(sid)) return;
 
       let sessionCwd = null;
       let branch = null;
       let yamlName = null;
       const wsPath = joinPath(child, "workspace.yaml");
-      if (await toPromise(fs.isFile(wsPath))) {
-        try {
-          const yamlData = parseSimpleYaml(await toPromise(fs.readText(wsPath)));
-          sessionCwd = yamlData.cwd || yamlData.path || null;
-          branch = yamlData.branch || yamlData.git_branch || null;
-          yamlName = yamlData.name || yamlData.title || null;
-        } catch {
-          /* ignore */
-        }
+      try {
+        const yamlData = parseSimpleYaml(await toPromise(fs.readText(wsPath)));
+        sessionCwd = yamlData.cwd || yamlData.path || null;
+        branch = yamlData.branch || yamlData.git_branch || null;
+        yamlName = yamlData.name || yamlData.title || null;
+      } catch {
+        /* ignore */
       }
 
       let metaTitle = null;
       const metaPath = joinPath(child, "meta.json");
-      if (await toPromise(fs.isFile(metaPath))) {
-        try {
-          const data = JSON.parse(await toPromise(fs.readText(metaPath)));
-          if (data && typeof data === "object") {
-            metaTitle = data.title || data.name || null;
-            if (!sessionCwd && typeof data.cwd === "string") sessionCwd = data.cwd;
-            if (!branch && typeof data.branch === "string") branch = data.branch;
-          }
-        } catch {
-          /* ignore */
+      try {
+        const data = JSON.parse(await toPromise(fs.readText(metaPath)));
+        if (data && typeof data === "object") {
+          metaTitle = data.title || data.name || null;
+          if (!sessionCwd && typeof data.cwd === "string") sessionCwd = data.cwd;
+          if (!branch && typeof data.branch === "string") branch = data.branch;
         }
+      } catch {
+        /* ignore */
       }
 
       if (!sessionCwd || !pathMatchesCwd(sessionCwd, cwd)) return;
@@ -315,7 +319,7 @@ export async function listCopilot(fs, cwd, opts = {}) {
         }
       }
 
-      const updated = await toPromise(fs.mtimeMs(child));
+      const updated = entry.mtimeMs || 0;
       mergeCopilotSession(store, sid, {
         yaml_name: yamlName,
         meta_title: metaTitle,

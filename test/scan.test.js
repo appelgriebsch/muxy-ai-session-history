@@ -23,6 +23,7 @@ import {
   slugify,
   claudeTitleFromJsonl,
   pickDisplayTitle,
+  takeRecent,
 } from "../src/lib/sessions/scan/helpers.js";
 
 const SID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -85,6 +86,17 @@ describe("scan helpers", () => {
       }),
       "Desktop DB Title",
     );
+  });
+
+  it("takeRecent filters kind, sorts mtime desc, slices limit", () => {
+    const entries = [
+      { name: "a", kind: "dir", mtimeMs: 100 },
+      { name: "b", kind: "file", mtimeMs: 300 },
+      { name: "c", kind: "dir", mtimeMs: 200 },
+    ];
+    const dirs = takeRecent(entries, { limit: 1, kind: "dir" });
+    assert.equal(dirs.length, 1);
+    assert.equal(dirs[0].name, "c");
   });
 });
 

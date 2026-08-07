@@ -3,9 +3,13 @@ import {
   UUID_RE,
   CODEX_ROLLOUT_RE,
   PER_GROUP_CAP,
+  ENRICH_SLACK,
+  SCAN_CONCURRENCY,
+  CODEX_MAX_DIRS_WALKED,
   isoToMs,
   sessionRow,
   toPromise,
+  mapPool,
 } from "./helpers.js";
 
 /**
@@ -17,12 +21,12 @@ async function resolveCodexHome(fs, opts = {}) {
   const envHome = await toPromise(fs.env("CODEX_HOME"));
   if (envHome) {
     if (envHome.startsWith("~")) {
-      const home = await toPromise(fs.homeDir());
+      const home = opts.home ?? (await toPromise(fs.homeDir()));
       return joinPath(home, envHome.slice(1).replace(/^\//, ""));
     }
     return envHome;
   }
-  return joinPath(await toPromise(fs.homeDir()), ".codex");
+  return joinPath(opts.home ?? (await toPromise(fs.homeDir())), ".codex");
 }
 
 /**
@@ -32,20 +36,18 @@ async function resolveCodexHome(fs, opts = {}) {
  * @returns {Promise<Array|null>}
  */
 async function listCodexDb(fs, home, cwd) {
-  let names;
+  let entries;
   try {
-    names = await toPromise(fs.listDir(home));
+    entries = await toPromise(fs.listDirDetailed(home));
   } catch {
     return null;
   }
   const candidates = [];
-  for (const name of names) {
-    const m = /^state_(\d+)\.sqlite$/.exec(name);
+  for (const e of entries) {
+    if (e.kind !== "file") continue;
+    const m = /^state_(\d+)\.sqlite$/.exec(e.name);
     if (!m) continue;
-    const path = joinPath(home, name);
-    if (await toPromise(fs.isFile(path))) {
-      candidates.push({ n: Number(m[1]), path });
-    }
+    candidates.push({ n: Number(m[1]), path: joinPath(home, e.name) });
   }
   if (!candidates.length) return null;
   candidates.sort((a, b) => b.n - a.n);
@@ -109,7 +111,7 @@ async function listCodexDb(fs, home, cwd) {
 }
 
 /**
- * JSONL rollout fallback (skip .zst).
+ * JSONL rollout fallback (skip .zst). Bounded walk + mtime-ranked reads.
  * @param {*} fs
  * @param {string} home
  * @param {string} cwd
@@ -118,69 +120,84 @@ async function listCodexFiles(fs, home, cwd) {
   const root = joinPath(home, "sessions");
   if (!(await toPromise(fs.isDir(root)))) return [];
 
-  const out = [];
+  /** @type {Array<{ path: string, sidFromName: string, mtimeMs: number }>} */
+  const fileCandidates = [];
   const stack = [root];
-  while (stack.length) {
+  let dirsWalked = 0;
+
+  while (stack.length && dirsWalked < CODEX_MAX_DIRS_WALKED) {
     const dir = stack.pop();
-    let names;
+    dirsWalked++;
+    let entries;
     try {
-      names = await toPromise(fs.listDir(dir));
+      entries = await toPromise(fs.listDirDetailed(dir));
     } catch {
       continue;
     }
-    for (const name of names) {
-      const path = joinPath(dir, name);
-      if (await toPromise(fs.isDir(path))) {
+    for (const e of entries) {
+      const path = joinPath(dir, e.name);
+      if (e.kind === "dir") {
         stack.push(path);
         continue;
       }
-      if (name.endsWith(".zst")) continue;
-      const m = CODEX_ROLLOUT_RE.exec(name);
+      if (e.kind !== "file") continue;
+      if (e.name.endsWith(".zst")) continue;
+      const m = CODEX_ROLLOUT_RE.exec(e.name);
       if (!m) continue;
-      if (!(await toPromise(fs.isFile(path)))) continue;
-
-      let head;
-      try {
-        head = await toPromise(fs.readHead(path, { maxBytes: 64_000 }));
-      } catch {
-        continue;
-      }
-      let payload = null;
-      for (const line of head.split("\n").slice(0, 20)) {
-        try {
-          const rec = JSON.parse(line);
-          if (
-            rec &&
-            typeof rec === "object" &&
-            rec.type === "session_meta" &&
-            rec.payload &&
-            typeof rec.payload === "object"
-          ) {
-            payload = rec.payload;
-            break;
-          }
-        } catch {
-          /* continue */
-        }
-      }
-      if (!payload || payload.cwd !== cwd) continue;
-      if (
-        payload.source != null &&
-        payload.source !== "cli" &&
-        payload.source !== "vscode"
-      ) {
-        continue;
-      }
-      const sid = payload.id || m[1];
-      if (typeof sid !== "string" || !UUID_RE.test(sid)) continue;
-      let branch = null;
-      if (payload.git && typeof payload.git === "object" && typeof payload.git.branch === "string") {
-        branch = payload.git.branch;
-      }
-      const updated = await toPromise(fs.mtimeMs(path));
-      out.push(sessionRow("codex", sid, "(untitled)", updated, branch));
+      fileCandidates.push({
+        path,
+        sidFromName: m[1],
+        mtimeMs: e.mtimeMs || 0,
+      });
     }
   }
+
+  fileCandidates.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+  const toRead = fileCandidates.slice(0, PER_GROUP_CAP + ENRICH_SLACK);
+
+  const rows = await mapPool(toRead, SCAN_CONCURRENCY, async (c) => {
+    let head;
+    try {
+      head = await toPromise(fs.readHead(c.path, { maxBytes: 64_000 }));
+    } catch {
+      return null;
+    }
+    let payload = null;
+    for (const line of head.split("\n").slice(0, 20)) {
+      try {
+        const rec = JSON.parse(line);
+        if (
+          rec &&
+          typeof rec === "object" &&
+          rec.type === "session_meta" &&
+          rec.payload &&
+          typeof rec.payload === "object"
+        ) {
+          payload = rec.payload;
+          break;
+        }
+      } catch {
+        /* continue */
+      }
+    }
+    if (!payload || payload.cwd !== cwd) return null;
+    if (
+      payload.source != null &&
+      payload.source !== "cli" &&
+      payload.source !== "vscode"
+    ) {
+      return null;
+    }
+    const sid = payload.id || c.sidFromName;
+    if (typeof sid !== "string" || !UUID_RE.test(sid)) return null;
+    let branch = null;
+    if (payload.git && typeof payload.git === "object" && typeof payload.git.branch === "string") {
+      branch = payload.git.branch;
+    }
+    return sessionRow("codex", sid, "(untitled)", c.mtimeMs || 0, branch);
+  });
+
+  const out = rows.filter(Boolean);
   out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
   return out.slice(0, PER_GROUP_CAP);
 }

@@ -62,23 +62,47 @@ function activeCwd() {
 }
 
 function detectInstalled() {
+  // One bash -lc probes all candidate binaries (single argvPrefix for consent).
+  const allNames = [];
+  for (let i = 0; i < PROVIDERS.length; i++) {
+    const bins = PROVIDERS[i].binaries;
+    for (let j = 0; j < bins.length; j++) {
+      if (allNames.indexOf(bins[j]) < 0) allNames.push(bins[j]);
+    }
+  }
+  const list = allNames
+    .map(function (n) {
+      return "'" + n + "'";
+    })
+    .join(" ");
+  const script =
+    "for c in " +
+    list +
+    '; do p=$(command -v "$c" 2>/dev/null) || continue; printf \'%s=%s\\n\' "$c" "$p"; done';
+  /** @type {Record<string, string>} */
+  const found = {};
+  try {
+    const result = muxy.exec(["bash", "-lc", script], { timeoutMs: 8000 });
+    const stdout = String(result.stdout || "");
+    const lines = stdout.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const name = line.slice(0, eq).trim();
+      const path = line.slice(eq + 1).trim();
+      if (name && path) found[name] = path;
+    }
+  } catch (e) {
+    /* no CLIs */
+  }
   const installed = [];
   for (let i = 0; i < PROVIDERS.length; i++) {
     const provider = PROVIDERS[i];
     for (let j = 0; j < provider.binaries.length; j++) {
-      const name = provider.binaries[j];
-      try {
-        const result = muxy.exec(["bash", "-lc", "command -v " + name], {
-          timeoutMs: 5000,
-        });
-        const path = String(result.stdout || "").trim();
-        const code = result.exitCode != null ? result.exitCode : result.code;
-        if (code === 0 && path) {
-          installed.push(provider);
-          break;
-        }
-      } catch (e) {
-        /* try next */
+      if (found[provider.binaries[j]]) {
+        installed.push(provider);
+        break;
       }
     }
   }
@@ -102,6 +126,12 @@ async function listAllSessions(cwd, installed) {
     );
   }
   const fs = createHostFs(exec);
+  let home;
+  try {
+    home = await toPromise(fs.homeDir());
+  } catch {
+    home = undefined;
+  }
   let sqliteAvailable = true;
   try {
     sqliteAvailable = Boolean(await toPromise(hasSqlite3(exec)));
@@ -113,7 +143,10 @@ async function listAllSessions(cwd, installed) {
   for (let i = 0; i < installed.length; i++) {
     const provider = installed[i];
     try {
-      const rows = await listSessionsJs(fs, provider.id, cwd, { sqliteAvailable });
+      const rows = await listSessionsJs(fs, provider.id, cwd, {
+        sqliteAvailable,
+        home,
+      });
       for (let j = 0; j < rows.length; j++) {
         const row = rows[j];
         if (!row || !isSafeSessionId(row.id)) continue;
