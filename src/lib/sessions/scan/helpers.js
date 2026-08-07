@@ -14,7 +14,11 @@ export const SCAN_CONCURRENCY = 8;
 /** Codex JSONL fallback: max directories to walk. */
 export const CODEX_MAX_DIRS_WALKED = 200;
 
-/** Copilot: max session-state dirs to probe (mtime-ordered). */
+/**
+ * Copilot: max residual session-state dirs to FS-probe when not already
+ * DB-indexed for the active cwd (mtime-ordered). Full `listDirDetailed` is
+ * always cheap; this only caps expensive per-dir yaml/events reads.
+ */
 export const COPILOT_MAX_STATE_DIRS = 100;
 
 export const UUID_RE =

@@ -8,7 +8,13 @@ import { createHostFs } from "../src/lib/host-fs.js";
 import { listGrok } from "../src/lib/sessions/scan/grok.js";
 import { listClaude } from "../src/lib/sessions/scan/claude.js";
 import { listCodex } from "../src/lib/sessions/scan/codex.js";
-import { pathQuote, slugify, PER_GROUP_CAP } from "../src/lib/sessions/scan/helpers.js";
+import { listCopilot } from "../src/lib/sessions/scan/copilot.js";
+import {
+  pathQuote,
+  slugify,
+  PER_GROUP_CAP,
+  COPILOT_MAX_STATE_DIRS,
+} from "../src/lib/sessions/scan/helpers.js";
 import { countingExec } from "./helpers/counting-exec.js";
 
 const PROJ = "/tmp/muxy-budget-proj";
@@ -162,6 +168,99 @@ describe("scan exec budgets (amplification)", () => {
     assert.ok(
       headCalls <= PER_GROUP_CAP + 15,
       `expected capped head calls, got ${headCalls}`,
+    );
+  });
+
+  it("listCopilot multi-project flood stays under budget with DB path columns", async () => {
+    const copilotHome = join(home, ".copilot");
+    const state = join(copilotHome, "session-state");
+    mkdirSync(state, { recursive: true });
+
+    const projectCount = 35;
+    const foreignCount = 150;
+    const projectSids = [];
+    const sql = [
+      `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, branch TEXT, summary TEXT, updated_at TEXT);`,
+      `CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, turn_index INT, user_message TEXT);`,
+    ];
+
+    function q(v) {
+      if (v == null) return "NULL";
+      return `'${String(v).replace(/'/g, "''")}'`;
+    }
+
+    for (let i = 0; i < projectCount; i++) {
+      const sid = uuidAt(i);
+      projectSids.push(sid);
+      const d = join(state, sid);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        join(d, "workspace.yaml"),
+        `id: ${sid}\ncwd: ${PROJ}\nbranch: main\nname: Proj ${i}\n`,
+      );
+      writeFileSync(
+        join(d, "events.jsonl"),
+        `{"type":"user.message","data":{"content":"p ${i}"}}\n`,
+      );
+      // Old mtimes — outside a global top-100 window of foreign dirs.
+      const t = new Date(2019, 0, 1, 0, 0, i);
+      utimesSync(d, t, t);
+      sql.push(
+        `INSERT INTO sessions VALUES (${q(sid)}, ${q(PROJ)}, 'main', ${q(`P${i}`)}, '2026-01-01T00:00:00Z');`,
+      );
+      sql.push(
+        `INSERT INTO turns (session_id, turn_index, user_message) VALUES (${q(sid)}, 0, 'hi');`,
+      );
+    }
+
+    for (let i = 0; i < foreignCount; i++) {
+      const sid = uuidAt(2000 + i);
+      const d = join(state, sid);
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        join(d, "workspace.yaml"),
+        `id: ${sid}\ncwd: /tmp/other\nbranch: main\nname: F ${i}\n`,
+      );
+      writeFileSync(
+        join(d, "events.jsonl"),
+        `{"type":"user.message","data":{"content":"f"}}\n`,
+      );
+      const t = new Date(2026, 6, 1, 0, 0, i % 60);
+      utimesSync(d, t, t);
+      sql.push(
+        `INSERT INTO sessions VALUES (${q(sid)}, ${q("/tmp/other")}, 'main', ${q(`F${i}`)}, '2026-06-01T00:00:00Z');`,
+      );
+    }
+
+    const store = join(copilotHome, "session-store.db");
+    spawnSync("/usr/bin/sqlite3", [store, sql.join("\n")], { encoding: "utf8" });
+
+    const exec = countingExec(realExec);
+    const fs = createHostFs(exec);
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome,
+      sqliteAvailable: true,
+    });
+
+    assert.equal(rows.length, projectCount);
+    const got = new Set(rows.map((r) => r.id));
+    for (const sid of projectSids) {
+      assert.ok(got.has(sid), `missing ${sid}`);
+    }
+
+    // Expensive probes: listDirDetailed (ls+stat) is cheap; per-dir reads bounded by
+    // project DB set + small residual (DB hits present → residual ≤ 20).
+    const catCalls = exec.countWhere((a) => a[0] === "/bin/cat");
+    const headCalls = exec.countWhere((a) => a[0] === "/usr/bin/head");
+    const residualWhenDbHits = Math.min(20, COPILOT_MAX_STATE_DIRS);
+    const maxProbes = projectCount + residualWhenDbHits;
+    assert.ok(
+      catCalls + headCalls <= maxProbes * 4 + 30,
+      `expected bounded file reads, got cat=${catCalls} head=${headCalls}`,
+    );
+    assert.ok(
+      exec.calls.length < 500,
+      `expected under budget exec count, got ${exec.calls.length}`,
     );
   });
 });

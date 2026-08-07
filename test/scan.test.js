@@ -16,7 +16,10 @@ import { listGrok } from "../src/lib/sessions/scan/grok.js";
 import { listCursor } from "../src/lib/sessions/scan/cursor.js";
 import { listClaude } from "../src/lib/sessions/scan/claude.js";
 import { listCodex } from "../src/lib/sessions/scan/codex.js";
-import { listCopilot } from "../src/lib/sessions/scan/copilot.js";
+import {
+  listCopilot,
+  buildCopilotProbeEntries,
+} from "../src/lib/sessions/scan/copilot.js";
 import {
   pathQuote,
   md5Hex,
@@ -24,6 +27,7 @@ import {
   claudeTitleFromJsonl,
   pickDisplayTitle,
   takeRecent,
+  COPILOT_MAX_STATE_DIRS,
 } from "../src/lib/sessions/scan/helpers.js";
 
 const SID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
@@ -293,6 +297,38 @@ describe("listCodex", () => {
   });
 });
 
+describe("buildCopilotProbeEntries", () => {
+  it("always includes DB sids and limits residual when DB hits exist", () => {
+    const entries = [];
+    for (let i = 0; i < 50; i++) {
+      entries.push({
+        name: `aaaaaaaa-aaaa-aaaa-aaaa-${i.toString(16).padStart(12, "0")}`,
+        kind: "dir",
+        mtimeMs: 1_000 + i,
+      });
+    }
+    const dbSid = "aaaaaaaa-aaaa-aaaa-aaaa-000000000001";
+    const probe = buildCopilotProbeEntries(entries, new Set([dbSid]));
+    assert.ok(probe.some((e) => e.name === dbSid));
+    // 1 DB + residual ≤ 20 when DB hits present
+    assert.ok(probe.length <= 1 + 20);
+    assert.ok(probe.length < entries.length);
+  });
+
+  it("uses full residual budget when DB set is empty", () => {
+    const entries = [];
+    for (let i = 0; i < COPILOT_MAX_STATE_DIRS + 30; i++) {
+      entries.push({
+        name: `bbbbbbbb-bbbb-bbbb-bbbb-${i.toString(16).padStart(12, "0")}`,
+        kind: "dir",
+        mtimeMs: 2_000 + i,
+      });
+    }
+    const probe = buildCopilotProbeEntries(entries, new Set());
+    assert.equal(probe.length, COPILOT_MAX_STATE_DIRS);
+  });
+});
+
 describe("listCopilot", () => {
   let home;
   let prevHome;
@@ -459,5 +495,148 @@ describe("listCopilot", () => {
     const fs = createHostFs(realExec);
     const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
     assert.equal(rows.length, 0);
+  });
+
+  function uuidAt(i) {
+    const hex = i.toString(16).padStart(12, "0");
+    return `cccccccc-cccc-cccc-cccc-${hex}`;
+  }
+
+  it("multi-project flood: DB-first returns all project sessions, zero foreign", async () => {
+    const { utimesSync } = await import("node:fs");
+    const projectCount = 40;
+    const foreignCount = 120;
+    const projectSids = [];
+    const foreignSids = [];
+    const storeSessions = [];
+    const storeTurns = [];
+
+    // Older project sessions (low mtime) — would be dropped by global mtime top-100.
+    for (let i = 0; i < projectCount; i++) {
+      const sid = uuidAt(i);
+      projectSids.push(sid);
+      const d = sessionDir(sid, {
+        cwd: PROJ,
+        events: `{"type":"user.message","data":{"content":"proj ${i}"}}\n`,
+        name: `Proj ${i}`,
+      });
+      const t = new Date(2020, 0, 1, 0, 0, i);
+      utimesSync(d, t, t);
+      storeSessions.push([sid, PROJ, `Project ${i}`]);
+      storeTurns.push(sid);
+    }
+
+    // Many newer foreign sessions dominate global mtime.
+    for (let i = 0; i < foreignCount; i++) {
+      const sid = uuidAt(1000 + i);
+      foreignSids.push(sid);
+      const d = sessionDir(sid, {
+        cwd: OTHER,
+        events: `{"type":"user.message","data":{"content":"foreign ${i}"}}\n`,
+        name: `Foreign ${i}`,
+      });
+      const t = new Date(2026, 5, 1, 0, 0, i);
+      utimesSync(d, t, t);
+      storeSessions.push([sid, OTHER, `Foreign ${i}`]);
+      storeTurns.push(sid);
+    }
+
+    writeStore({ sessions: storeSessions, turns: storeTurns });
+
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
+    const got = ids(rows);
+    assert.equal(rows.length, projectCount, `expected ${projectCount} project sessions`);
+    for (const sid of projectSids) {
+      assert.ok(got.has(sid), `missing project session ${sid}`);
+    }
+    for (const sid of foreignSids) {
+      assert.equal(got.has(sid), false, `foreign session leaked: ${sid}`);
+    }
+  });
+
+  it("no silent 25-cap: returns more than PER_GROUP_CAP for one project", async () => {
+    const { PER_GROUP_CAP } = await import("../src/lib/sessions/scan/helpers.js");
+    const n = PER_GROUP_CAP + 10;
+    const storeSessions = [];
+    const storeTurns = [];
+    for (let i = 0; i < n; i++) {
+      const sid = uuidAt(i);
+      sessionDir(sid, {
+        cwd: PROJ,
+        events: `{"type":"user.message","data":{"content":"s ${i}"}}\n`,
+      });
+      storeSessions.push([sid, PROJ, `S ${i}`]);
+      storeTurns.push(sid);
+    }
+    writeStore({ sessions: storeSessions, turns: storeTurns });
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
+    assert.equal(rows.length, n);
+    assert.ok(rows.length > PER_GROUP_CAP);
+  });
+
+  it("DB index matches trailing-slash cwd form under foreign flood", async () => {
+    const { utimesSync } = await import("node:fs");
+    const target = uuidAt(7);
+    const d = sessionDir(target, {
+      cwd: PROJ,
+      events: '{"type":"user.message","data":{"content":"slash"}}\n',
+    });
+    const t = new Date(2018, 0, 1);
+    utimesSync(d, t, t);
+    // DB stores trailing slash; yaml uses PROJ without slash.
+    const store = join(home, "session-store.db");
+    spawnSync(
+      "/usr/bin/sqlite3",
+      [
+        store,
+        `CREATE TABLE sessions (id TEXT PRIMARY KEY, cwd TEXT, branch TEXT, summary TEXT, updated_at TEXT);
+         CREATE TABLE turns (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, turn_index INT, user_message TEXT);
+         INSERT INTO sessions VALUES ('${target}', '${PROJ}/', 'main', 'Slash', '2026-01-01T00:00:00Z');
+         INSERT INTO turns (session_id, turn_index, user_message) VALUES ('${target}', 0, 'hi');`,
+      ],
+      { encoding: "utf8" },
+    );
+    for (let i = 0; i < 110; i++) {
+      const sid = uuidAt(3000 + i);
+      const fd = sessionDir(sid, {
+        cwd: OTHER,
+        events: '{"type":"user.message","data":{"content":"f"}}\n',
+      });
+      utimesSync(fd, new Date(2026, 6, 1, 0, 0, i % 60), new Date(2026, 6, 1, 0, 0, i % 60));
+    }
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, { copilotHome: home, sqliteAvailable: true });
+    assert.ok(ids(rows).has(target));
+  });
+
+  it("sqliteAvailable false: residual mtime wave still finds recent project sessions", async () => {
+    const { utimesSync } = await import("node:fs");
+    // A few project dirs with recent mtime + foreign older ones.
+    const target = uuidAt(1);
+    const d = sessionDir(target, {
+      cwd: PROJ,
+      events: '{"type":"user.message","data":{"content":"target"}}\n',
+    });
+    utimesSync(d, new Date(2026, 6, 1), new Date(2026, 6, 1));
+    for (let i = 0; i < 5; i++) {
+      const sid = uuidAt(50 + i);
+      const fd = sessionDir(sid, {
+        cwd: OTHER,
+        events: '{"type":"user.message","data":{"content":"f"}}\n',
+      });
+      utimesSync(fd, new Date(2020, 0, i + 1), new Date(2020, 0, i + 1));
+    }
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome: home,
+      sqliteAvailable: false,
+    });
+    assert.ok(ids(rows).has(target));
+    assert.equal(
+      rows.every((r) => r.cwd === PROJ),
+      true,
+    );
   });
 });

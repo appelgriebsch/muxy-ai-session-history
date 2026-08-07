@@ -10,6 +10,10 @@ import { providerById } from "@/lib/sessions/providers";
 import { toPromise } from "@/lib/sessions/scan/helpers";
 
 const GLOBAL_CAP = 80;
+/** Soft per-provider cap for providers that still use PER_GROUP_CAP-style listing. */
+const PER_PROVIDER_CAP = 25;
+/** Providers that return a cwd-complete list — do not silently re-cap. */
+const UNCAPPED_PROVIDERS = new Set(["copilot"]);
 
 /**
  * Load all sessions for installed CLIs at cwd.
@@ -72,7 +76,11 @@ export async function listAll(cwd, opts = {}) {
     const provider = installed[i];
     const result = results[i];
     if (result.status === "fulfilled") {
-      sessionsByCli[provider.id] = result.value.sessions.slice(0, 25);
+      const sessions = result.value.sessions;
+      // Copilot (and future cwd-complete providers): keep full project set.
+      sessionsByCli[provider.id] = UNCAPPED_PROVIDERS.has(provider.id)
+        ? sessions
+        : sessions.slice(0, PER_PROVIDER_CAP);
     } else {
       sessionsByCli[provider.id] = [];
       errorsByCli[provider.id] =
@@ -80,13 +88,21 @@ export async function listAll(cwd, opts = {}) {
     }
   }
 
-  // Soft global cap: trim oldest across groups if needed
+  // Soft cap for *non–cwd-complete* providers only (GLOBAL_CAP). Uncapped
+  // providers (Copilot) keep the full project set so filter chips and All
+  // view never drop them. GLOBAL_CAP is never reduced by uncapped size — so
+  // a large Copilot project does not empty Claude/Codex/… chips.
   let groups = buildGroups(installed, sessionsByCli, errorsByCli);
-  let total = groups.reduce((n, g) => n + g.sessions.length, 0);
-  if (total > GLOBAL_CAP) {
-    const flat = flattenSessions(groups).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    const keep = new Set(flat.slice(0, GLOBAL_CAP).map((s) => `${s.cli}:${s.id}`));
+  const otherFlat = flattenSessions(groups)
+    .filter((s) => !UNCAPPED_PROVIDERS.has(s.cli))
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const otherSlots = GLOBAL_CAP;
+  if (otherFlat.length > otherSlots) {
+    const keep = new Set(
+      otherFlat.slice(0, otherSlots).map((s) => `${s.cli}:${s.id}`),
+    );
     for (const g of groups) {
+      if (UNCAPPED_PROVIDERS.has(g.cli)) continue;
       g.sessions = g.sessions.filter((s) => keep.has(`${s.cli}:${s.id}`));
     }
     groups = groups.filter((g) => g.sessions.length || g.error);
