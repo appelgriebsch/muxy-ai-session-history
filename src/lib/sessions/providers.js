@@ -36,10 +36,24 @@ export const PROVIDERS = [
     binaries: ["cursor-agent", "cursor"],
     capabilities: { rename: true, delete: true },
   },
+  {
+    id: "opencode",
+    displayName: "OpenCode",
+    binary: "opencode",
+    binaries: ["opencode"],
+    capabilities: { rename: true, delete: true },
+  },
 ];
 
 /** Preference order for "Start new" when preferredCli is missing. */
-export const START_PREFERENCE = ["grok", "claude", "codex", "copilot", "cursor"];
+export const START_PREFERENCE = [
+  "grok",
+  "claude",
+  "codex",
+  "copilot",
+  "cursor",
+  "opencode",
+];
 
 export function providerById(id) {
   return PROVIDERS.find((p) => p.id === id) ?? null;

@@ -296,6 +296,72 @@ async function deleteCursor(fs, home, sessionId) {
 }
 
 /**
+ * Resolve OpenCode SQLite DB path (mirrors scan/opencode.js).
+ * @param {*} fs
+ * @param {string} home
+ */
+async function resolveOpenCodeDb(fs, home) {
+  const xdg = await toPromise(fs.env("XDG_DATA_HOME"));
+  const dataDir = xdg
+    ? joinPath(xdg, "opencode")
+    : joinPath(home, ".local", "share", "opencode");
+  const envDb = await toPromise(fs.env("OPENCODE_DB"));
+  if (envDb && envDb !== ":memory:") {
+    if (envDb.startsWith("/")) return envDb;
+    return joinPath(dataDir, envDb);
+  }
+  const primary = joinPath(dataDir, "opencode.db");
+  if (await toPromise(fs.isFile(primary))) return primary;
+  try {
+    const names = await toPromise(fs.listDir(dataDir));
+    for (const n of names) {
+      if (!/^opencode(-[A-Za-z0-9._-]+)?\.db$/.test(n)) continue;
+      const path = joinPath(dataDir, n);
+      if (await toPromise(fs.isFile(path))) return path;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+async function renameOpenCode(fs, home, sessionId, newTitle) {
+  const dbPath = await resolveOpenCodeDb(fs, home);
+  if (!dbPath) throw new Error("No OpenCode database found");
+  const existing = await toPromise(
+    fs.sqliteQuery(
+      dbPath,
+      `SELECT id FROM session WHERE id = ${sqlQuote(sessionId)} LIMIT 1`,
+    ),
+  );
+  if (!existing.length) throw new Error(`OpenCode session not found: ${sessionId}`);
+  const now = Date.now();
+  await toPromise(
+    fs.sqliteExec(
+      dbPath,
+      `UPDATE session SET title = ${sqlQuote(newTitle)}, time_updated = ${now} ` +
+        `WHERE id = ${sqlQuote(sessionId)}`,
+    ),
+  );
+}
+
+async function deleteOpenCode(fs, home, sessionId) {
+  const dbPath = await resolveOpenCodeDb(fs, home);
+  if (!dbPath) throw new Error("No OpenCode database found");
+  const existing = await toPromise(
+    fs.sqliteQuery(
+      dbPath,
+      `SELECT id FROM session WHERE id = ${sqlQuote(sessionId)} LIMIT 1`,
+    ),
+  );
+  if (!existing.length) throw new Error(`OpenCode session not found: ${sessionId}`);
+  // CASCADE FK on messages when present; best-effort delete session row.
+  await toPromise(
+    fs.sqliteExec(dbPath, `DELETE FROM session WHERE id = ${sqlQuote(sessionId)}`),
+  );
+}
+
+/**
  * Rename a session title via host-fs.
  * @param {*} fs
  * @param {string} cli
@@ -316,6 +382,8 @@ export async function renameSessionJs(fs, cli, sessionId, newTitle) {
       return renameCursor(fs, home, sessionId, newTitle);
     case "copilot":
       return renameCopilot(fs, home, sessionId, newTitle);
+    case "opencode":
+      return renameOpenCode(fs, home, sessionId, newTitle);
     default:
       throw new Error(`Rename not supported for CLI: ${cli}`);
   }
@@ -339,6 +407,8 @@ export async function deleteSessionJs(fs, cli, sessionId, cwd) {
       return deleteClaude(fs, home, sessionId, cwd);
     case "cursor":
       return deleteCursor(fs, home, sessionId);
+    case "opencode":
+      return deleteOpenCode(fs, home, sessionId);
     default:
       throw new Error(`Delete not supported for CLI: ${cli}`);
   }

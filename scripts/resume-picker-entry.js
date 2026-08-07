@@ -15,6 +15,7 @@ const PROVIDERS = [
   { id: "codex", displayName: "Codex", binaries: ["codex"] },
   { id: "copilot", displayName: "Copilot", binaries: ["copilot"] },
   { id: "cursor", displayName: "Cursor", binaries: ["cursor-agent", "cursor"] },
+  { id: "opencode", displayName: "OpenCode", binaries: ["opencode"] },
 ];
 
 const RESUME = {
@@ -23,6 +24,7 @@ const RESUME = {
   codex: (id) => "codex resume " + shellQuote(id),
   copilot: (id) => "copilot --resume=" + shellQuote(id),
   cursor: (id) => "cursor-agent --resume " + shellQuote(id),
+  opencode: (id) => "opencode --session " + shellQuote(id),
 };
 
 function shellQuote(value) {

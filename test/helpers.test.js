@@ -33,6 +33,10 @@ describe("sanitize", () => {
     assert.equal(isSafeSessionId("short"), false);
   });
 
+  it("accepts OpenCode ses_ session ids", () => {
+    assert.equal(isSafeSessionId("ses_0123456789abcdef"), true);
+  });
+
   it("rejects Copilot stub id prefixes", () => {
     assert.equal(
       isSafeSessionId("optimistic-chat-e4b462a3-3628-4aad-90ae-43b9c4fee922"),
@@ -56,10 +60,12 @@ describe("resume commands", () => {
     assert.match(buildResumeCommand("codex", id), /^codex resume '/);
     assert.match(buildResumeCommand("copilot", id), /^copilot --resume='/);
     assert.match(buildResumeCommand("cursor", id), /^cursor-agent --resume '/);
+    assert.match(buildResumeCommand("opencode", "ses_abc123def"), /^opencode --session '/);
   });
   it("start commands", () => {
     assert.equal(buildStartCommand("grok"), "grok");
     assert.equal(buildStartCommand("cursor"), "cursor-agent");
+    assert.equal(buildStartCommand("opencode"), "opencode");
   });
 });
 
