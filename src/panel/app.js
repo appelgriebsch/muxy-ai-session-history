@@ -1160,7 +1160,7 @@ export class SessionsPanel {
       h(
         "p",
         { class: "text-center" },
-        "Install grok, claude, codex, copilot, or cursor-agent, then refresh.",
+        "Install grok, claude, codex, copilot, cursor-agent, or opencode, then refresh.",
       ),
     );
   }
