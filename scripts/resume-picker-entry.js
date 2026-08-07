@@ -1,13 +1,14 @@
 /**
  * Palette command entry: multi-provider session resume modal.
  * Built to a single IIFE via esbuild (see copy-manifest.mjs).
- * runScript context — muxy.* is mostly synchronous; host-fs is thenables-aware.
+ *
+ * runScript context — muxy.* is synchronous (no await). Scanners are chain-based
+ * so host-fs + sync muxy.exec returns plain arrays. Stream rows via modal items(emit).
  */
 
-import { createHostFs, ensureHostTools, hasSqlite3, chain } from "../src/lib/host-fs.js";
+import { createHostFs, ensureHostTools, hasSqlite3 } from "../src/lib/host-fs.js";
 import { listSessionsJs } from "../src/lib/sessions/scan/index.js";
 import { isSafeSessionId } from "../src/lib/sanitize.js";
-import { toPromise } from "../src/lib/sessions/scan/helpers.js";
 
 const PROVIDERS = [
   { id: "grok", displayName: "Grok", binaries: ["grok"] },
@@ -27,6 +28,8 @@ const RESUME = {
   opencode: (id) => "opencode --session " + shellQuote(id),
 };
 
+const GLOBAL_CAP = 80;
+
 function shellQuote(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'";
 }
@@ -44,6 +47,14 @@ function relativeTime(ms) {
   const day = Math.floor(hr / 24);
   if (day < 30) return day + "d ago";
   return Math.floor(day / 30) + "mo ago";
+}
+
+function notify(body) {
+  try {
+    muxy.notifications.notify({ title: "AI Sessions", body: body });
+  } catch (e) {
+    /* ignore */
+  }
 }
 
 function activeCwd() {
@@ -112,108 +123,138 @@ function detectInstalled() {
 }
 
 /**
- * Sync-friendly list: host-fs chain returns plain values when exec is sync.
- * Scanners are async functions — we drive them with a tiny sync pump by
- * resolving only non-promise values... Actually async functions always
- * return Promises. For runScript we need either top-level await or a
- * blocking wait. Muxy runScript supports returning a Promise from the
- * script in recent hosts; we use async IIFE.
+ * Sync scan one CLI. Throws if host-fs unexpectedly returns a Promise.
+ * @returns {Array}
  */
-async function listAllSessions(cwd, installed) {
-  const exec = (argv, options) => muxy.exec(argv, options);
-  const toolsOk = await toPromise(ensureHostTools(exec));
-  if (!toolsOk) {
-    throw new Error(
-      "Host tools (cat, ls, stat, …) are required to read CLI session stores",
-    );
+function listRowsSync(fs, providerId, cwd, opts) {
+  const rows = listSessionsJs(fs, providerId, cwd, opts);
+  if (rows != null && typeof rows.then === "function") {
+    throw new Error("scan returned Promise in runScript (expected sync host-fs)");
   }
-  const fs = createHostFs(exec);
-  let home;
-  try {
-    home = await toPromise(fs.homeDir());
-  } catch {
-    home = undefined;
-  }
-  let sqliteAvailable = true;
-  try {
-    sqliteAvailable = Boolean(await toPromise(hasSqlite3(exec)));
-  } catch {
-    sqliteAvailable = false;
-  }
-
-  const items = [];
-  for (let i = 0; i < installed.length; i++) {
-    const provider = installed[i];
-    try {
-      const rows = await listSessionsJs(fs, provider.id, cwd, {
-        sqliteAvailable,
-        home,
-      });
-      for (let j = 0; j < rows.length; j++) {
-        const row = rows[j];
-        if (!row || !isSafeSessionId(row.id)) continue;
-        items.push({
-          id: provider.id + ":" + row.id,
-          title: String(row.title || "(untitled)").replace(/\s+/g, " ").slice(0, 120),
-          subtitle: [
-            provider.displayName,
-            relativeTime(Number(row.updatedAt) || 0),
-            row.branch || "",
-          ]
-            .filter(Boolean)
-            .join(" · "),
-          _updatedAt: Number(row.updatedAt) || 0,
-        });
-      }
-    } catch (e) {
-      /* skip provider */
-    }
-  }
-  items.sort(function (a, b) {
-    return (b._updatedAt || 0) - (a._updatedAt || 0);
-  });
-  return items.slice(0, 80);
+  return rows || [];
 }
 
-async function main() {
+function main() {
   const cwd = activeCwd();
   if (!cwd) {
-    muxy.notifications.notify({
-      title: "AI Sessions",
-      body: "No active project folder",
-    });
+    notify("No active project folder");
     return;
   }
   const installed = detectInstalled();
   if (!installed.length) {
-    muxy.notifications.notify({
-      title: "AI Sessions",
-      body: "No AI CLIs found on PATH",
-    });
+    notify("No AI CLIs found on PATH");
     return;
   }
-  let items;
+
+  const exec = function (argv, options) {
+    return muxy.exec(argv, options);
+  };
+
+  let toolsOk = false;
   try {
-    items = await listAllSessions(cwd, installed);
+    toolsOk = Boolean(ensureHostTools(exec));
   } catch (e) {
-    muxy.notifications.notify({
-      title: "AI Sessions",
-      body: e?.message || String(e),
-    });
+    toolsOk = false;
+  }
+  if (!toolsOk) {
+    notify("Host tools (cat, ls, stat, …) are required to read CLI session stores");
     return;
   }
-  if (!items.length) {
-    muxy.notifications.notify({
-      title: "AI Sessions",
-      body: "No resumable sessions for this folder",
-    });
+
+  const fs = createHostFs(exec);
+  let home;
+  try {
+    home = fs.homeDir();
+  } catch (e) {
+    home = undefined;
+  }
+  if (home != null && typeof home.then === "function") {
+    notify("Host filesystem is async in runScript; cannot list sessions");
     return;
   }
+
+  let sqliteAvailable = true;
+  try {
+    sqliteAvailable = Boolean(hasSqlite3(exec));
+  } catch (e) {
+    sqliteAvailable = false;
+  }
+  if (typeof sqliteAvailable.then === "function") {
+    sqliteAvailable = true;
+  }
+
+  const scanOpts = { sqliteAvailable: Boolean(sqliteAvailable), home: home };
+
   muxy.modal.open({
     placeholder: "Resume AI session…",
-    items: items.map(function (item) {
-      return { id: item.id, title: item.title, subtitle: item.subtitle };
-    }),
+    emptyLabel: "No resumable sessions for this folder",
+    noMatchLabel: "No matches",
+    /**
+     * Sync producer: scan every installed CLI, stream batches as they finish
+     * so the modal fills instead of blocking on the slowest provider (e.g. Copilot).
+     */
+    items: function (emit) {
+      /** @type {string[]} */
+      const softErrors = [];
+      let total = 0;
+
+      for (let i = 0; i < installed.length; i++) {
+        if (total >= GLOBAL_CAP) break;
+        const provider = installed[i];
+        try {
+          const rows = listRowsSync(fs, provider.id, cwd, scanOpts);
+          /** @type {Array<{ id: string, title: string, subtitle: string, _updatedAt: number }>} */
+          const batch = [];
+          for (let j = 0; j < rows.length; j++) {
+            const row = rows[j];
+            if (!row || !isSafeSessionId(row.id)) continue;
+            batch.push({
+              id: provider.id + ":" + row.id,
+              title: String(row.title || "(untitled)")
+                .replace(/\s+/g, " ")
+                .slice(0, 120),
+              subtitle: [
+                provider.displayName,
+                relativeTime(Number(row.updatedAt) || 0),
+                row.branch || "",
+              ]
+                .filter(Boolean)
+                .join(" · "),
+              _updatedAt: Number(row.updatedAt) || 0,
+            });
+          }
+          // Stream this provider’s rows immediately (newest first within provider).
+          if (batch.length) {
+            batch.sort(function (a, b) {
+              return (b._updatedAt || 0) - (a._updatedAt || 0);
+            });
+            const room = GLOBAL_CAP - total;
+            const slice = batch.slice(0, room);
+            total += slice.length;
+            emit(
+              slice.map(function (item) {
+                return {
+                  id: item.id,
+                  title: item.title,
+                  subtitle: item.subtitle,
+                };
+              }),
+            );
+          }
+        } catch (e) {
+          const msg = e && e.message ? e.message : String(e);
+          softErrors.push(provider.displayName + ": " + msg);
+        }
+      }
+
+      // Soft-fail visibility: other providers still listed; surface failures.
+      if (softErrors.length) {
+        notify(
+          softErrors.slice(0, 3).join("; ") +
+            (softErrors.length > 3 ? "…" : ""),
+        );
+      }
+    },
     onSelect: function (choice) {
       if (!choice) return;
       const parts = String(choice.id).split(":");
@@ -230,20 +271,9 @@ async function main() {
   });
 }
 
-// Kick off; swallow rejection into notification.
-const _run = main();
-if (_run && typeof _run.then === "function") {
-  _run.catch(function (e) {
-    try {
-      muxy.notifications.notify({
-        title: "AI Sessions",
-        body: e?.message || String(e),
-      });
-    } catch (err) {
-      /* ignore */
-    }
-  });
+// Fully synchronous entry — no floating promises.
+try {
+  main();
+} catch (e) {
+  notify(e && e.message ? e.message : String(e));
 }
-
-// silence unused
-void chain;

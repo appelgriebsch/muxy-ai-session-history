@@ -92,13 +92,16 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
       ? Boolean(opts.sqliteAvailable)
       : await resolveSqlite(exec);
   try {
-    const rows = await listSessionsJs(fs, cli, cwd, {
-      sqliteAvailable,
-      home: opts.home,
-      claudeConfigDir: opts.claudeConfigDir,
-      codexHome: opts.codexHome,
-      copilotHome: opts.copilotHome,
-    });
+    // listSessionsJs is chain-based: plain array (sync exec) or Promise (async exec).
+    const rows = await toPromise(
+      listSessionsJs(fs, cli, cwd, {
+        sqliteAvailable,
+        home: opts.home,
+        claudeConfigDir: opts.claudeConfigDir,
+        codexHome: opts.codexHome,
+        copilotHome: opts.copilotHome,
+      }),
+    );
     return (rows || [])
       .map((item) => normalizeSession(item, cli))
       .filter(Boolean);
@@ -118,23 +121,35 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
 }
 
 /**
- * Synchronous-friendly variant for runScript.
- * When exec is sync, host-fs methods return plain values; we still use async
- * scanners (await on plain values is fine) so callers may await this.
+ * Synchronous variant for runScript (sync muxy.exec → plain arrays).
+ * Prefer the resume-picker IIFE; this is for tests / advanced callers.
  * @param {string} cli
  * @param {string} cwd
- * @param {Function | { exec?: Function, fs?: object }} [execOrOpts]
+ * @param {Function | { exec?: Function, fs?: object, home?: string, sqliteAvailable?: boolean }} [execOrOpts]
+ * @returns {Array}
  */
 export function listSessionsForCliSync(cli, cwd, execOrOpts = muxy.exec) {
   const opts =
     typeof execOrOpts === "function" ? { exec: execOrOpts } : execOrOpts ?? {};
   const exec = opts.exec ?? muxy.exec;
-  // Return a thenable that runScript can treat as sync if already resolved —
-  // but scanners are async functions. For runScript, use listSessionsForCli
-  // with a sync exec (await on non-promises works in async functions).
-  // Callers in runScript should use the built picker's async-free path via
-  // the bundled IIFE which uses Promise-less chain for sync exec when possible.
-  return listSessionsForCli(cli, cwd, { ...opts, exec });
+  const fs = opts.fs ?? createHostFs(exec);
+  const sqliteAvailable =
+    opts.sqliteAvailable !== undefined ? Boolean(opts.sqliteAvailable) : true;
+  const rows = listSessionsJs(fs, cli, cwd, {
+    sqliteAvailable,
+    home: opts.home,
+    claudeConfigDir: opts.claudeConfigDir,
+    codexHome: opts.codexHome,
+    copilotHome: opts.copilotHome,
+  });
+  if (rows != null && typeof rows.then === "function") {
+    throw new Error(
+      "listSessionsForCliSync: exec returned Promises; use listSessionsForCli",
+    );
+  }
+  return (rows || [])
+    .map((item) => normalizeSession(item, cli))
+    .filter(Boolean);
 }
 
 // re-export chain for tests

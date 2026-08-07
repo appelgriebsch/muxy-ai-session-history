@@ -1,9 +1,9 @@
-import { joinPath, sqlQuote } from "../../host-fs.js";
+import { joinPath, chain } from "../../host-fs.js";
 import {
   PER_GROUP_CAP,
   normPath,
   sessionRow,
-  toPromise,
+  tryChain,
   isoToMs,
 } from "./helpers.js";
 
@@ -14,12 +14,13 @@ const SES_ID_RE = /^ses_[0-9a-zA-Z._-]{4,120}$/;
  * @param {*} fs
  * @param {{ home?: string, dataDir?: string }} [opts]
  */
-export async function resolveOpenCodeDataDir(fs, opts = {}) {
+export function resolveOpenCodeDataDir(fs, opts = {}) {
   if (opts.dataDir) return opts.dataDir;
-  const xdg = await toPromise(fs.env("XDG_DATA_HOME"));
-  if (xdg) return joinPath(xdg, "opencode");
-  const home = opts.home ?? (await toPromise(fs.homeDir()));
-  return joinPath(home, ".local", "share", "opencode");
+  return chain(fs.env("XDG_DATA_HOME"), (xdg) => {
+    if (xdg) return joinPath(xdg, "opencode");
+    const homeP = opts.home != null ? opts.home : fs.homeDir();
+    return chain(homeP, (home) => joinPath(home, ".local", "share", "opencode"));
+  });
 }
 
 /**
@@ -28,88 +29,116 @@ export async function resolveOpenCodeDataDir(fs, opts = {}) {
  * @param {string} dataDir
  * @param {string | null} [openCodeDbEnv]
  */
-export async function resolveOpenCodeDbPath(fs, dataDir, openCodeDbEnv = null) {
+export function resolveOpenCodeDbPath(fs, dataDir, openCodeDbEnv = null) {
   if (openCodeDbEnv) {
     if (openCodeDbEnv === ":memory:") return null;
     if (openCodeDbEnv.startsWith("/")) return openCodeDbEnv;
     return joinPath(dataDir, openCodeDbEnv);
   }
   const primary = joinPath(dataDir, "opencode.db");
-  if (await toPromise(fs.isFile(primary))) return primary;
+  return chain(fs.isFile(primary), (ok) => {
+    if (ok) return primary;
+    return chain(tryChain(() => fs.listDir(dataDir), []), (names) => {
+      const candidates = (names || [])
+        .filter((n) => /^opencode(-[A-Za-z0-9._-]+)?\.db$/.test(n))
+        .map((n) => joinPath(dataDir, n));
+      return pickFirstFile(fs, candidates, 0);
+    });
+  });
+}
 
-  // Channel builds: opencode-<channel>.db
-  let names = [];
+/**
+ * @param {*} fs
+ * @param {string[]} candidates
+ * @param {number} i
+ */
+function pickFirstFile(fs, candidates, i) {
+  if (i >= candidates.length) return null;
+  return chain(fs.isFile(candidates[i]), (ok) => {
+    if (ok) return candidates[i];
+    return pickFirstFile(fs, candidates, i + 1);
+  });
+}
+
+/**
+ * @param {*} fs
+ * @param {string} dbPath
+ * @param {string} sql
+ */
+function sqliteQuerySoft(fs, dbPath, sql) {
   try {
-    names = await toPromise(fs.listDir(dataDir));
-  } catch {
-    return null;
+    const v = fs.sqliteQuery(dbPath, sql);
+    if (v != null && typeof v.then === "function") {
+      return v.then(
+        (rows) => rows,
+        (err) => {
+          const msg = String(err?.message || err);
+          if (/no such table|unable to open/i.test(msg)) return [];
+          throw err;
+        },
+      );
+    }
+    return v;
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (/no such table|unable to open/i.test(msg)) return [];
+    throw err;
   }
-  const candidates = names
-    .filter((n) => /^opencode(-[A-Za-z0-9._-]+)?\.db$/.test(n))
-    .map((n) => joinPath(dataDir, n));
-  for (const path of candidates) {
-    if (await toPromise(fs.isFile(path))) return path;
-  }
-  return null;
 }
 
 /**
  * List OpenCode sessions for cwd from opencode.db.
+ * Returns plain array when fs is sync; Promise when exec is async.
  * @param {*} fs
  * @param {string} cwd
  * @param {{ home?: string, dataDir?: string, dbPath?: string, sqliteAvailable?: boolean }} [opts]
  */
-export async function listOpenCode(fs, cwd, opts = {}) {
+export function listOpenCode(fs, cwd, opts = {}) {
   if (opts.sqliteAvailable === false) {
     throw new Error(
       "opencode: /usr/bin/sqlite3 is required to read session stores on this host",
     );
   }
 
-  const dataDir = await resolveOpenCodeDataDir(fs, opts);
-  let dbPath = opts.dbPath;
-  if (!dbPath) {
-    const envDb = await toPromise(fs.env("OPENCODE_DB"));
-    dbPath = await resolveOpenCodeDbPath(fs, dataDir, envDb);
-  }
-  if (!dbPath) return [];
+  return chain(resolveOpenCodeDataDir(fs, opts), (dataDir) => {
+    const dbPathP =
+      opts.dbPath != null
+        ? opts.dbPath
+        : chain(fs.env("OPENCODE_DB"), (envDb) =>
+            resolveOpenCodeDbPath(fs, dataDir, envDb),
+          );
 
-  // Roots only (no child sessions), not archived, ordered by updated.
-  // Filter cwd in JS with normPath (DB may store trailing slash variants).
-  const sql =
-    `SELECT id, title, directory, time_updated, time_archived, parent_id ` +
-    `FROM session ` +
-    `WHERE (parent_id IS NULL OR parent_id = '') ` +
-    `AND (time_archived IS NULL) ` +
-    `ORDER BY time_updated DESC LIMIT 200`;
+    return chain(dbPathP, (dbPath) => {
+      if (!dbPath) return [];
 
-  let rows;
-  try {
-    rows = await toPromise(fs.sqliteQuery(dbPath, sql));
-  } catch (err) {
-    // Missing table / empty DB → no sessions rather than hard fail
-    const msg = String(err?.message || err);
-    if (/no such table|unable to open/i.test(msg)) return [];
-    throw err;
-  }
+      const sql =
+        `SELECT id, title, directory, time_updated, time_archived, parent_id ` +
+        `FROM session ` +
+        `WHERE (parent_id IS NULL OR parent_id = '') ` +
+        `AND (time_archived IS NULL) ` +
+        `ORDER BY time_updated DESC LIMIT 200`;
 
-  const target = normPath(cwd);
-  const out = [];
-  for (const r of rows) {
-    const sid = r.id;
-    if (typeof sid !== "string" || !SES_ID_RE.test(sid)) continue;
-    const dir = typeof r.directory === "string" ? r.directory : "";
-    if (!dir || normPath(dir) !== target) continue;
-    const title =
-      typeof r.title === "string" && r.title.trim() ? r.title : "(untitled)";
-    let updated = 0;
-    if (typeof r.time_updated === "number") {
-      updated = isoToMs(r.time_updated) || Math.trunc(r.time_updated) || 0;
-    } else if (r.time_updated != null) {
-      updated = isoToMs(r.time_updated) || 0;
-    }
-    out.push(sessionRow("opencode", sid, title, updated, null, dir));
-    if (out.length >= PER_GROUP_CAP) break;
-  }
-  return out;
+      return chain(sqliteQuerySoft(fs, dbPath, sql), (rows) => {
+        const target = normPath(cwd);
+        const out = [];
+        for (const r of rows || []) {
+          const sid = r.id;
+          if (typeof sid !== "string" || !SES_ID_RE.test(sid)) continue;
+          const dir = typeof r.directory === "string" ? r.directory : "";
+          if (!dir || normPath(dir) !== target) continue;
+          const title =
+            typeof r.title === "string" && r.title.trim() ? r.title : "(untitled)";
+          let updated = 0;
+          if (typeof r.time_updated === "number") {
+            updated = isoToMs(r.time_updated) || Math.trunc(r.time_updated) || 0;
+          } else if (r.time_updated != null) {
+            updated = isoToMs(r.time_updated) || 0;
+          }
+          out.push(sessionRow("opencode", sid, title, updated, null, dir));
+          if (out.length >= PER_GROUP_CAP) break;
+        }
+        return out;
+      });
+    });
+  });
 }

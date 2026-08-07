@@ -1,6 +1,7 @@
 /** Shared pure helpers for session scanners (no host I/O). */
 
 import { oneLine } from "../../sanitize.js";
+import { chain } from "../../host-fs.js";
 
 export const PER_GROUP_CAP = 25;
 
@@ -64,14 +65,56 @@ export function resolveTitleLikeColumn(cols) {
 
 
 /**
+ * UTF-8 encode without TextEncoder (unavailable in Muxy runScript / JSC).
+ * @param {string} str
+ * @returns {Uint8Array}
+ */
+export function utf8Bytes(str) {
+  const s = String(str);
+  /** @type {number[]} */
+  const out = [];
+  for (let i = 0; i < s.length; i++) {
+    let code = s.charCodeAt(i);
+    // Surrogate pair → full code point
+    if (code >= 0xd800 && code <= 0xdbff && i + 1 < s.length) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        code = 0x10000 + ((code - 0xd800) << 10) + (next - 0xdc00);
+        i++;
+      }
+    }
+    if (code <= 0x7f) {
+      out.push(code);
+    } else if (code <= 0x7ff) {
+      out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+    } else if (code <= 0xffff) {
+      out.push(
+        0xe0 | (code >> 12),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      );
+    } else {
+      out.push(
+        0xf0 | (code >> 18),
+        0x80 | ((code >> 12) & 0x3f),
+        0x80 | ((code >> 6) & 0x3f),
+        0x80 | (code & 0x3f),
+      );
+    }
+  }
+  return new Uint8Array(out);
+}
+
+/**
  * Match Python urllib.parse.quote(s, safe="") for path segments.
  * Unquoted: A-Za-z0-9_.-
  * @param {string} str
  */
 export function pathQuote(str) {
   let out = "";
-  const bytes = new TextEncoder().encode(String(str));
-  for (const b of bytes) {
+  const bytes = utf8Bytes(String(str));
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i];
     const ch = String.fromCharCode(b);
     if (/[A-Za-z0-9_.-]/.test(ch)) {
       out += ch;
@@ -87,9 +130,8 @@ export function pathQuote(str) {
  * @param {string} text
  */
 export function md5Hex(text) {
-  // Minimal MD5 implementation (RFC 1321) — UTF-8 bytes via TextEncoder.
-  const bytes = new TextEncoder().encode(String(text));
-  return md5Bytes(bytes);
+  // Minimal MD5 implementation (RFC 1321) — UTF-8 bytes (no TextEncoder).
+  return md5Bytes(utf8Bytes(String(text)));
 }
 
 function md5Bytes(bytes) {
@@ -399,7 +441,8 @@ export function claudeTitleFromJsonl(text) {
 }
 
 /**
- * Map over items with concurrency limit.
+ * Map over items with concurrency limit (async-only path).
+ * Prefer mapSeq when host-fs may be sync (runScript) so chain stays plain values.
  * @template T, R
  * @param {T[]} items
  * @param {number} limit
@@ -417,6 +460,50 @@ export async function mapPool(items, limit, fn) {
   });
   await Promise.all(workers);
   return results;
+}
+
+/**
+ * Sequential map that preserves host-fs chain duality (plain value or Promise).
+ * Use this in scanners so runScript (sync muxy.exec) never needs async/await.
+ * @template T, R
+ * @param {T[]} items
+ * @param {(item: T, index: number) => R | Promise<R>} fn
+ * @returns {R[] | Promise<R[]>}
+ */
+export function mapSeq(items, fn) {
+  const list = items || [];
+  return list.reduce(
+    (acc, item, index) =>
+      chain(acc, (results) =>
+        chain(fn(item, index), (value) => {
+          results.push(value);
+          return results;
+        }),
+      ),
+    /** @type {R[]} */ ([]),
+  );
+}
+
+/**
+ * Run fn(); on throw or rejected thenable return fallback.
+ * @template T
+ * @param {() => T | Promise<T>} fn
+ * @param {T} fallback
+ * @returns {T | Promise<T>}
+ */
+export function tryChain(fn, fallback) {
+  try {
+    const v = fn();
+    if (v != null && typeof v.then === "function") {
+      return v.then(
+        (x) => x,
+        () => fallback,
+      );
+    }
+    return v;
+  } catch {
+    return fallback;
+  }
 }
 
 /**

@@ -50,6 +50,15 @@ describe("scan helpers", () => {
     assert.equal(pathQuote("/Users/a/b"), "%2FUsers%2Fa%2Fb");
   });
 
+  it("pathQuote and md5Hex work without TextEncoder (runScript/JSC)", async () => {
+    const { utf8Bytes } = await import("../src/lib/sessions/scan/helpers.js");
+    // Non-ASCII path segment (UTF-8 multi-byte)
+    assert.equal(pathQuote("/tmp/café"), "%2Ftmp%2Fcaf%C3%A9");
+    assert.ok(utf8Bytes("café").length >= 5);
+    // md5 of empty string is a known constant
+    assert.equal(md5Hex(""), "d41d8cd98f00b204e9800998ecf8427e");
+  });
+
   it("pathMatchesCwd is exact (no prefix false positive)", async () => {
     const { pathMatchesCwd } = await import("../src/lib/sessions/scan/helpers.js");
     assert.equal(pathMatchesCwd("/tmp/muxy-test-proj", "/tmp/muxy-test-proj"), true);
@@ -131,6 +140,26 @@ describe("listGrok", () => {
     assert.equal(rows[0].id, SID);
     assert.equal(rows[0].title, "Grok Session");
     assert.equal(rows[0].cli, "grok");
+  });
+
+  it("returns a plain array with sync exec (runScript dual-mode)", () => {
+    const root = join(home, ".grok", "sessions", pathQuote(PROJ));
+    const sess = join(root, SID);
+    mkdirSync(sess, { recursive: true });
+    writeFileSync(
+      join(sess, "summary.json"),
+      JSON.stringify({
+        generated_title: "Sync Path",
+        updated_at: "2026-08-06T12:00:00Z",
+        info: { id: SID },
+      }),
+    );
+    const fs = createHostFs(realExec);
+    const rows = listGrok(fs, PROJ, { home });
+    assert.equal(rows != null && typeof rows.then === "function", false);
+    assert.ok(Array.isArray(rows));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, "Sync Path");
   });
 });
 

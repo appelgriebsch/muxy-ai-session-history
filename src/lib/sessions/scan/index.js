@@ -9,12 +9,14 @@ import { hasSqlite3 } from "../../host-fs.js";
 
 /**
  * List sessions for one CLI using pure JS + host-fs.
+ * Returns a plain array when host-fs is sync (runScript), or a Promise when
+ * exec is async (panel). Callers that always await should use toPromise().
  * @param {*} fs  createHostFs instance
  * @param {string} cli
  * @param {string} cwd
- * @param {{ sqliteAvailable?: boolean }} [opts]
+ * @param {{ sqliteAvailable?: boolean, home?: string }} [opts]
  */
-export async function listSessionsJs(fs, cli, cwd, opts = {}) {
+export function listSessionsJs(fs, cli, cwd, opts = {}) {
   const id = String(cli || "").toLowerCase();
   // Callers (scan.js façade, resume-picker) should pass sqliteAvailable after probing.
   // Default true so fixture tests with real sqlite work without an exec probe.
