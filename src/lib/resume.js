@@ -7,6 +7,7 @@ const RESUME = {
   codex: (id) => `codex resume ${shellQuote(id)}`,
   copilot: (id) => `copilot --resume=${shellQuote(id)}`,
   cursor: (id) => `cursor-agent --resume ${shellQuote(id)}`,
+  opencode: (id) => `opencode --session ${shellQuote(id)}`,
 };
 
 const START = {
@@ -15,6 +16,7 @@ const START = {
   codex: "codex",
   copilot: "copilot",
   cursor: "cursor-agent",
+  opencode: "opencode",
 };
 
 export function buildResumeCommand(cli, sessionId) {

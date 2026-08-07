@@ -6,13 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && bun scripts/copy-manifest.mjs",
-    "test": "bun test test/helpers.test.js && python3 -m unittest discover -s test/python -v",
-    "test:js": "bun test test/helpers.test.js",
-    "test:scanner": "python3 -m unittest discover -s test/python -v",
+    "test": "bun test test/",
+    "test:js": "bun test test/",
     "update-skill": "node -e \"const fs=require('fs'),p=require('path');const url='https://raw.githubusercontent.com/muxy-app/muxy/main/Muxy/Resources/skills/muxy-extension/SKILL.md';fetch(url).then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.text()}).then(t=>{for(const d of ['.claude/skills/muxy-extension','.agents/skills/muxy-extension']){fs.mkdirSync(d,{recursive:true});fs.writeFileSync(p.join(d,'SKILL.md'),t);console.log('Updated '+p.join(d,'SKILL.md'))}}).catch(e=>{console.error('Failed to update skill:',e.message);process.exit(1)})\""
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
+    "esbuild": "^0.25.12",
     "tailwindcss": "^4.3.0",
     "vite": "^7.3.5"
   },
@@ -30,19 +30,26 @@
       "notifications:write",
       "commands:run-script"
     ],
-    "events": ["project.switched", "worktree.switched"],
+    "events": [
+      "project.switched",
+      "worktree.switched"
+    ],
     "panels": [
       {
         "id": "sessions",
         "title": "AI Sessions",
-        "icon": { "symbol": "clock.arrow.circlepath" },
+        "icon": {
+          "symbol": "clock.arrow.circlepath"
+        },
         "entry": "panel/index.html",
         "position": "right",
         "mode": "floating",
         "headerButtons": [
           {
             "id": "refresh",
-            "icon": { "symbol": "arrow.clockwise" },
+            "icon": {
+              "symbol": "arrow.clockwise"
+            },
             "tooltip": "Refresh",
             "command": "refresh-sessions"
           }
@@ -54,7 +61,10 @@
         "id": "toggle-sessions",
         "title": "AI Sessions: Toggle Panel",
         "defaultShortcut": "cmd+shift+h",
-        "action": { "kind": "togglePanel", "panel": "sessions" }
+        "action": {
+          "kind": "togglePanel",
+          "panel": "sessions"
+        }
       },
       {
         "id": "refresh-sessions",
@@ -63,13 +73,18 @@
       {
         "id": "resume-picker",
         "title": "AI Sessions: Resume…",
-        "action": { "kind": "runScript", "script": "scripts/resume-picker.built.js" }
+        "action": {
+          "kind": "runScript",
+          "script": "scripts/resume-picker.built.js"
+        }
       }
     ],
     "topbarItems": [
       {
         "id": "sessions",
-        "icon": { "symbol": "clock.arrow.circlepath" },
+        "icon": {
+          "symbol": "clock.arrow.circlepath"
+        },
         "tooltip": "AI Sessions",
         "command": "toggle-sessions"
       }

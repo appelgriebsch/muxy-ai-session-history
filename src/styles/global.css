@@ -13,6 +13,7 @@
   --color-border: var(--muxy-border);
   --color-input: var(--muxy-border);
   --color-ring: var(--muxy-accent);
+  --color-destructive: var(--muxy-danger, var(--muxy-error, #dc2626));
   --radius: 6px;
 }
 
@@ -34,6 +35,19 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+/* Visually hidden but available to assistive tech (stable aria-live host). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }
 
 button {

@@ -19,6 +19,8 @@ import {
   startButtonLabel,
   startMenuItems,
 } from "../src/lib/sessions/start-cli.js";
+import * as manageApi from "../src/lib/sessions/manage.js";
+import * as storageApi from "../src/lib/storage.js";
 
 describe("sanitize", () => {
   it("collapses whitespace and strips control chars", () => {
@@ -29,6 +31,10 @@ describe("sanitize", () => {
     assert.equal(isSafeSessionId("019fd37f-cc78-76c3-ba12-c5008005b813"), true);
     assert.equal(isSafeSessionId("abc;rm -rf /"), false);
     assert.equal(isSafeSessionId("short"), false);
+  });
+
+  it("accepts OpenCode ses_ session ids", () => {
+    assert.equal(isSafeSessionId("ses_0123456789abcdef"), true);
   });
 
   it("rejects Copilot stub id prefixes", () => {
@@ -54,10 +60,12 @@ describe("resume commands", () => {
     assert.match(buildResumeCommand("codex", id), /^codex resume '/);
     assert.match(buildResumeCommand("copilot", id), /^copilot --resume='/);
     assert.match(buildResumeCommand("cursor", id), /^cursor-agent --resume '/);
+    assert.match(buildResumeCommand("opencode", "ses_abc123def"), /^opencode --session '/);
   });
   it("start commands", () => {
     assert.equal(buildStartCommand("grok"), "grok");
     assert.equal(buildStartCommand("cursor"), "cursor-agent");
+    assert.equal(buildStartCommand("opencode"), "opencode");
   });
 });
 
@@ -133,18 +141,16 @@ function thr_ms(minutes) {
 };
 
 describe("providers capabilities", () => {
-  it("every provider has a capabilities object with rename/archive/delete booleans", () => {
+  it("every provider has a capabilities object with rename/delete booleans only", () => {
     for (const p of PROVIDERS) {
       assert.ok(p.capabilities, `${p.id} missing capabilities`);
       assert.equal(typeof p.capabilities.rename, "boolean", `${p.id}.capabilities.rename`);
-      assert.equal(typeof p.capabilities.archive, "boolean", `${p.id}.capabilities.archive`);
       assert.equal(typeof p.capabilities.delete, "boolean", `${p.id}.capabilities.delete`);
-    }
-  });
-
-  it("archive is true for all providers", () => {
-    for (const p of PROVIDERS) {
-      assert.equal(p.capabilities.archive, true, `${p.id} should support archive`);
+      assert.deepEqual(
+        Object.keys(p.capabilities).sort(),
+        ["delete", "rename"],
+        `${p.id} capabilities keys`,
+      );
     }
   });
 
@@ -160,23 +166,36 @@ describe("providers capabilities", () => {
     assert.equal(claude.capabilities.delete, true);
   });
 
-  it("codex supports rename and archive but not delete", () => {
+  it("codex supports rename but not delete", () => {
     const codex = providerById("codex");
     assert.equal(codex.capabilities.rename, true);
-    assert.equal(codex.capabilities.archive, true);
     assert.equal(codex.capabilities.delete, false);
   });
 
-  it("copilot supports rename and archive but not delete", () => {
+  it("copilot supports rename but not delete", () => {
     const copilot = providerById("copilot");
     assert.equal(copilot.capabilities.rename, true);
-    assert.equal(copilot.capabilities.archive, true);
     assert.equal(copilot.capabilities.delete, false);
   });
 
-  it("archive is Muxy-only (all providers claim archive without native delete of store)", () => {
-    for (const p of PROVIDERS) {
-      assert.equal(p.capabilities.archive, true);
+  it("cursor supports rename and delete", () => {
+    const cursor = providerById("cursor");
+    assert.equal(cursor.capabilities.rename, true);
+    assert.equal(cursor.capabilities.delete, true);
+  });
+});
+
+
+describe("archive API surface removed", () => {
+  it("manage/storage no longer export archive APIs", () => {
+    assert.equal("archiveSession" in manageApi, false);
+    for (const name of [
+      "getArchivedSessions",
+      "setSessionArchived",
+      "getShowArchived",
+      "setShowArchived",
+    ]) {
+      assert.equal(name in storageApi, false, name);
     }
   });
 });

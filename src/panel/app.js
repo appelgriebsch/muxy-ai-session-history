@@ -3,20 +3,17 @@ import { icon } from "@/lib/icons";
 import { providerIcon } from "@/lib/provider-icons";
 import { activeCwd, shortPath } from "@/lib/cwd";
 import {
-  getArchivedSessions,
   getListFilter,
   getPreferredCli,
-  getShowArchived,
   setListFilter,
   setPreferredCli,
-  setShowArchived,
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
 import { filterGroups, listAll } from "@/lib/sessions/index";
 import { buildStartActionModel, pickStartCli } from "@/lib/sessions/start-cli";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
-import { archiveSession, deleteSession, renameSession } from "@/lib/sessions/manage";
+import { deleteSession, renameSession } from "@/lib/sessions/manage";
 import { providerById } from "@/lib/sessions/providers";
 import {
   editTargetStillPresent,
@@ -48,9 +45,10 @@ export class SessionsPanel {
     this.loading = true;
     this.error = null;
     this.busyId = null;
-    this.showArchived = false;
-    this.archivedSet = new Set();
-    this.pythonMissing = false;
+    this.hostToolsMissing = false;
+    this.refreshing = false;
+    /** Monotonic epoch so overlapping listAll calls cannot clobber newer results. */
+    this._listEpoch = 0;
     this.editingKey = null;
     this.editDraft = "";
     this.editError = null;
@@ -58,6 +56,8 @@ export class SessionsPanel {
     this.startMenuOpen = false;
     this._pendingFocus = null;
     this._lastEditedKey = null;
+    /** Stable aria-live region (not recreated filled on every render). */
+    this._liveRegion = null;
     this._startMenuDocListener = null;
   }
 
@@ -153,8 +153,6 @@ export class SessionsPanel {
   async start() {
     this.preferredCli = await getPreferredCli();
     this.filter = await getListFilter();
-    this.showArchived = await getShowArchived();
-    this.archivedSet = await getArchivedSessions();
 
     muxy.events.subscribe("command.refresh-sessions", () => this.refresh());
     muxy.events.subscribe("project.switched", () => this.refresh());
@@ -163,23 +161,72 @@ export class SessionsPanel {
     await this.refresh();
   }
 
+  /**
+   * Soft re-list without blanking the panel (used after rename/delete).
+   */
+  async relistQuiet() {
+    const epoch = ++this._listEpoch;
+    try {
+      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd);
+      if (epoch !== this._listEpoch) return;
+      this.installed = installed;
+      // Keep previous groups when host tools vanish mid-session (SWR).
+      if (hostToolsMissing && this.groups.length) {
+        this.hostToolsMissing = true;
+        this.error = errorsByCli?._host || this.error;
+      } else {
+        this.groups = groups;
+        this.hostToolsMissing = Boolean(hostToolsMissing);
+        if (this.hostToolsMissing && errorsByCli?._host) {
+          this.error = errorsByCli._host;
+        } else {
+          this.error = null;
+        }
+      }
+    } catch (err) {
+      if (epoch !== this._listEpoch) return;
+      // Keep previous groups visible; surface via notification if possible.
+      this.error = err?.message || String(err);
+      try {
+        await muxy.notifications.notify({
+          title: "Could not refresh sessions",
+          body: this.error,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   async refresh() {
     this.clearInlineModes();
     this._pendingFocus = null;
-    this.loading = true;
-    this.error = null;
+    const epoch = ++this._listEpoch;
+    const hasData = this.groups.length > 0;
+    if (hasData) {
+      this.refreshing = true;
+    } else {
+      this.loading = true;
+    }
+    // Only clear global error on full cold load; keep list during SWR refresh.
+    if (!hasData) this.error = null;
     this.render();
     try {
       this.cwd = await activeCwd();
-      this.archivedSet = await getArchivedSessions();
-      const { installed, groups, pythonMissing, errorsByCli } = await listAll(this.cwd, {
-        archivedSet: this.archivedSet,
-      });
+      const { installed, groups, hostToolsMissing, errorsByCli } = await listAll(this.cwd);
+      if (epoch !== this._listEpoch) return;
       this.installed = installed;
-      this.groups = groups;
-      this.pythonMissing = Boolean(pythonMissing);
-      if (this.pythonMissing && errorsByCli?._python) {
-        this.error = errorsByCli._python;
+      if (hostToolsMissing && hasData) {
+        this.hostToolsMissing = true;
+        this.error = errorsByCli?._host || this.error;
+      } else {
+        this.groups = groups;
+        this.hostToolsMissing = Boolean(hostToolsMissing);
+        if (this.hostToolsMissing && errorsByCli?._host) {
+          this.error = errorsByCli._host;
+        } else {
+          this.error = null;
+        }
       }
       if (this.filter !== "all" && !installed.some((p) => p.id === this.filter)) {
         this.filter = "all";
@@ -201,14 +248,21 @@ export class SessionsPanel {
         this.confirmingDeleteKey = null;
       }
     } catch (err) {
+      if (epoch !== this._listEpoch) return;
       this.error = err?.message || String(err);
-      this.installed = [];
-      this.groups = [];
-      this.pythonMissing = false;
+      // Hard failure only blanks when we had no prior data.
+      if (!hasData) {
+        this.installed = [];
+        this.groups = [];
+      }
+      this.hostToolsMissing = false;
       this.clearInlineModes();
     } finally {
-      this.loading = false;
-      this.render();
+      if (epoch === this._listEpoch) {
+        this.loading = false;
+        this.refreshing = false;
+        this.render();
+      }
     }
   }
 
@@ -275,13 +329,6 @@ export class SessionsPanel {
     }
   }
 
-  async toggleShowArchived() {
-    this.clearInlineModes();
-    this._pendingFocus = null;
-    this.showArchived = !this.showArchived;
-    await setShowArchived(this.showArchived);
-    this.render();
-  }
 
   beginRename(session) {
     if (this.busyId) return;
@@ -320,6 +367,18 @@ export class SessionsPanel {
     this.render();
   }
 
+  /** Visible session keys in display order (for post-delete focus neighbor). */
+  _visibleSessionKeys() {
+    const visible = filterGroups(this.groups, this.filter);
+    const sessions =
+      this.filter === "all"
+        ? visible
+            .flatMap((g) => g.sessions)
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        : visible.flatMap((g) => g.sessions);
+    return sessions.map((s) => sessionRowKey(s.cli, s.id));
+  }
+
   async confirmDelete() {
     if (!this.confirmingDeleteKey || this.busyId) return;
     const key = this.confirmingDeleteKey;
@@ -329,14 +388,30 @@ export class SessionsPanel {
       this.render();
       return;
     }
+    const keys = this._visibleSessionKeys();
+    const idx = keys.indexOf(key);
+    const neighborKey =
+      (idx >= 0 && keys[idx + 1]) || (idx > 0 && keys[idx - 1]) || null;
+
     this.busyId = key;
     this.render();
     try {
       await deleteSession(session.cli, session.id, this.cwd);
-      this._lastEditedKey = key;
       this.confirmingDeleteKey = null;
+      await this.relistQuiet();
       this.busyId = null;
-      await this.refresh();
+      // Prefer neighbor still present after re-list; else Start chevron / empty Start.
+      const stillThere =
+        neighborKey &&
+        findSessionByKey(neighborKey, this.groups) != null;
+      if (stillThere) {
+        this._lastEditedKey = neighborKey;
+        this._pendingFocus = "row";
+      } else {
+        this._lastEditedKey = null;
+        this._pendingFocus = this.installed.length ? "start-chevron" : null;
+      }
+      this.render();
     } catch (err) {
       try {
         await muxy.notifications.notify({
@@ -381,7 +456,7 @@ export class SessionsPanel {
       this._lastEditedKey = key;
       this.clearEditState();
       this.busyId = null;
-      await this.refresh();
+      await this.relistQuiet();
       this._pendingFocus = "row";
       this.render();
     } catch (err) {
@@ -399,43 +474,58 @@ export class SessionsPanel {
     }
   }
 
-  async archive(session) {
-    this.clearInlineModes();
-    const newArchived = !session.archived;
-    const key = sessionRowKey(session.cli, session.id);
-    this.busyId = key;
-    this.render();
-    try {
-      await archiveSession(session.cli, session.id, newArchived);
-      this.archivedSet = await getArchivedSessions();
-      const { groups } = await listAll(this.cwd, { archivedSet: this.archivedSet });
-      this.groups = groups;
-    } catch (err) {
-      try {
-        await muxy.notifications.notify({
-          title: newArchived ? "Could not archive session" : "Could not unarchive session",
-          body: err?.message || String(err),
-        });
-      } catch {
-        /* ignore */
-      }
-    } finally {
-      this.busyId = null;
-      this.render();
+
+  /** Text for the stable aria-live region (only updates when content changes). */
+  _liveStatusText() {
+    const parts = [];
+    if (this.loading && !this.groups.length) parts.push("Loading sessions…");
+    if (this.refreshing) parts.push("Refreshing…");
+    if (this.error) parts.push(this.error);
+    return parts.join(" · ");
+  }
+
+  _ensureShell() {
+    if (!this._liveRegion || !this._liveRegion.isConnected) {
+      this._liveRegion = h("div", {
+        role: "status",
+        "aria-live": "polite",
+        "aria-atomic": "true",
+        "data-panel-live": "true",
+        class: "sr-only",
+      });
     }
+    let viewHost = this.root.querySelector("[data-panel-view]");
+    if (!viewHost) {
+      clear(this.root);
+      viewHost = h("div", {
+        "data-panel-view": "true",
+        class: "h-full min-h-0",
+      });
+      this.root.appendChild(this._liveRegion);
+      this.root.appendChild(viewHost);
+    } else if (!this._liveRegion.isConnected) {
+      this.root.insertBefore(this._liveRegion, viewHost);
+    }
+    return viewHost;
   }
 
   render() {
-    clear(this.root);
-    this.root.appendChild(this.view());
+    const viewHost = this._ensureShell();
+    clear(viewHost);
+    viewHost.appendChild(this.view());
+    const liveText = this._liveStatusText();
+    if (this._liveRegion && this._liveRegion.textContent !== liveText) {
+      this._liveRegion.textContent = liveText;
+    }
     this._applyPendingFocus();
   }
 
   _applyPendingFocus() {
     const intent = this._pendingFocus;
     this._pendingFocus = null;
+    const scope = this.root.querySelector("[data-panel-view]") || this.root;
     if (intent === "input" && this.editingKey) {
-      const input = this.root.querySelector(
+      const input = scope.querySelector(
         `input[data-edit-key="${dataKeyAttr(this.editingKey)}"]`,
       );
       if (input) {
@@ -445,7 +535,7 @@ export class SessionsPanel {
       return;
     }
     if (intent === "delete-confirm" && this.confirmingDeleteKey) {
-      const btn = this.root.querySelector(
+      const btn = scope.querySelector(
         `button[data-delete-confirm="${dataKeyAttr(this.confirmingDeleteKey)}"]`,
       );
       btn?.focus();
@@ -454,31 +544,37 @@ export class SessionsPanel {
     if (intent === "row") {
       const key = this._lastEditedKey;
       if (!key) return;
-      const btn = this.root.querySelector(
+      const btn = scope.querySelector(
         `button[data-session-key="${dataKeyAttr(key)}"]`,
       );
-      btn?.focus();
+      if (btn) {
+        btn.focus();
+        return;
+      }
+      // Deleted row gone: fall back to Start chevron or first filter chip.
+      scope.querySelector("button[data-start-chevron]")?.focus() ||
+        scope.querySelector("button[aria-pressed]")?.focus();
       return;
     }
     if (intent === "start-chevron") {
-      this.root.querySelector("button[data-start-chevron]")?.focus();
+      scope.querySelector("button[data-start-chevron]")?.focus() ||
+        scope
+          .querySelector(
+            "button.h-7.rounded-md.bg-primary, button[data-start-main]",
+          )
+          ?.focus();
       return;
     }
     if (intent === "start-menu-item") {
-      const selected = this.root.querySelector(
+      const selected = scope.querySelector(
         "[data-start-menu] [aria-selected='true']",
       );
-      (selected ?? this.root.querySelector("[data-start-menu] button"))?.focus();
+      (selected ?? scope.querySelector("[data-start-menu] button"))?.focus();
     }
   }
 
   view() {
-    const allVisible = filterGroups(this.groups, this.filter);
-    // Apply archived filter: unless showArchived is on, hide archived sessions
-    const visible = allVisible.map((g) => ({
-      ...g,
-      sessions: this.showArchived ? g.sessions : g.sessions.filter((s) => !s.archived),
-    })).filter((g) => g.sessions.length || g.error);
+    const visible = filterGroups(this.groups, this.filter);
     const flat =
       this.filter !== "all"
         ? visible.flatMap((g) => g.sessions)
@@ -496,11 +592,11 @@ export class SessionsPanel {
       h(
         "div",
         { class: "min-h-0 flex-1 overflow-y-auto px-1 pb-2" },
-        this.loading
+        this.loading && !this.groups.length
           ? this.emptyState("Loading sessions…")
-          : this.error
+          : this.error && !this.groups.length
             ? this.emptyState(this.error)
-            : !this.installed.length
+            : !this.installed.length && !this.loading
               ? this.noCliState()
               : this.filter === "all"
                 ? this.groupedBody(visible)
@@ -515,8 +611,6 @@ export class SessionsPanel {
       { id: "all", label: "All", providerId: null },
       ...this.installed.map((p) => ({ id: p.id, label: p.displayName, providerId: p.id })),
     ];
-
-    const hasArchived = this.groups.some((g) => g.sessions.some((s) => s.archived));
 
     return h(
       "div",
@@ -537,20 +631,6 @@ export class SessionsPanel {
           chip.label,
         ),
       ),
-      (hasArchived || this.showArchived)
-        ? h(
-            "button",
-            {
-              type: "button",
-              class: this.showArchived
-                ? "ml-auto h-6 rounded-md bg-primary px-2 text-[11px] font-medium text-primary-foreground outline-none"
-                : "ml-auto h-6 rounded-md border border-border bg-surface px-2 text-[11px] text-foreground outline-none hover:bg-accent",
-              onclick: () => this.toggleShowArchived(),
-            },
-            icon("archive", 10),
-            " Archived",
-          )
-        : null,
     );
   }
 
@@ -566,13 +646,8 @@ export class SessionsPanel {
     return h(
       "div",
       { class: "flex flex-col gap-1" },
-      ...errors.map((g) =>
-        h(
-          "div",
-          { class: "px-2 py-1 text-[11px] text-muted-foreground" },
-          `${g.displayName}: ${g.error}`,
-        ),
-      ),
+      this.statusBanner(),
+      ...errors.map((g) => this.statusLine(`${g.displayName}: ${g.error}`)),
       ...dateGroups.map(({ label, sessions }) =>
         this.dateSection(label, sessions),
       ),
@@ -590,13 +665,8 @@ export class SessionsPanel {
     return h(
       "div",
       { class: "flex flex-col" },
-      group?.error
-        ? h(
-            "div",
-            { class: "px-2 py-1 text-[11px] text-muted-foreground" },
-            group.error,
-          )
-        : null,
+      this.statusBanner(),
+      group?.error ? this.statusLine(group.error) : null,
       ...dateGroups.map(({ label, sessions: dateSessions }) =>
         this.dateSection(label, dateSessions),
       ),
@@ -647,7 +717,7 @@ export class SessionsPanel {
       return h(
         "div",
         {
-          class: `group relative flex w-full items-stretch rounded-md bg-destructive/10${session.archived ? " opacity-60" : ""}`,
+          class: "group relative flex w-full items-stretch rounded-md bg-destructive/10",
           "aria-busy": busy ? "true" : "false",
         },
         h(
@@ -755,7 +825,7 @@ export class SessionsPanel {
       return h(
         "div",
         {
-          class: `group relative flex w-full items-stretch rounded-md bg-accent/40${session.archived ? " opacity-60" : ""}`,
+          class: "group relative flex w-full items-stretch rounded-md bg-accent/40",
           "aria-busy": busy ? "true" : "false",
         },
         h(
@@ -769,9 +839,6 @@ export class SessionsPanel {
             "div",
             { class: "flex w-full items-center gap-2" },
             providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
-            session.archived
-              ? icon("archive", 10, "shrink-0 text-muted-foreground")
-              : null,
             h("input", inputAttrs),
             busy ? icon("refresh", 12, "text-muted-foreground animate-spin") : null,
           ),
@@ -845,26 +912,6 @@ export class SessionsPanel {
         ),
       );
     }
-    if (caps.archive) {
-      actionButtons.push(
-        h(
-          "button",
-          {
-            type: "button",
-            title: session.archived ? "Unarchive" : "Archive",
-            "aria-label": session.archived ? "Unarchive" : "Archive",
-            disabled: busy,
-            class:
-              "flex items-center rounded p-0.5 text-muted-foreground opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 hover:text-foreground hover:bg-accent outline-none disabled:opacity-40",
-            onclick: (e) => {
-              e.stopPropagation();
-              this.archive(session);
-            },
-          },
-          icon(session.archived ? "archive-restore" : "archive", 11),
-        ),
-      );
-    }
     if (caps.delete) {
       actionButtons.push(
         h(
@@ -889,7 +936,7 @@ export class SessionsPanel {
     return h(
       "div",
       {
-        class: `group relative flex w-full items-stretch rounded-md hover:bg-accent${session.archived ? " opacity-60" : ""}`,
+        class: "group relative flex w-full items-stretch rounded-md hover:bg-accent",
       },
       h(
         "button",
@@ -905,9 +952,6 @@ export class SessionsPanel {
           "div",
           { class: "flex w-full items-center gap-2" },
           providerIcon(session.cli, 14, "shrink-0 text-muted-foreground"),
-          session.archived
-            ? icon("archive", 10, "shrink-0 text-muted-foreground")
-            : null,
           h(
             "span",
             { class: "min-w-0 flex-1 truncate text-[12px] text-foreground" },
@@ -1038,6 +1082,44 @@ export class SessionsPanel {
     );
   }
 
+  /**
+   * Visual status line (soft per-CLI vs hard host/global errors).
+   * Announcements use the stable `_liveRegion`, not recreated live regions.
+   * @param {string} text
+   * @param {{ hard?: boolean }} [opts]
+   */
+  statusLine(text, opts = {}) {
+    const hard = Boolean(opts.hard);
+    return h(
+      "div",
+      {
+        class: hard
+          ? "px-2 py-1 text-[11px] font-medium text-destructive"
+          : "px-2 py-1 text-[11px] text-muted-foreground",
+      },
+      text,
+    );
+  }
+
+  statusBanner() {
+    const parts = [];
+    if (this.refreshing) {
+      parts.push(
+        h(
+          "div",
+          { class: "px-2 py-1 text-[11px] text-muted-foreground" },
+          "Refreshing…",
+        ),
+      );
+    }
+    if (this.error && this.groups.length) {
+      // Host/global errors are hard failures even when SWR keeps prior list.
+      parts.push(this.statusLine(this.error, { hard: true }));
+    }
+    if (!parts.length) return null;
+    return h("div", { class: "flex flex-col gap-0.5" }, ...parts);
+  }
+
   emptyState(message, showStart = false) {
     const model = buildStartActionModel(this.preferredCli, this.installed);
     return h(
@@ -1052,6 +1134,7 @@ export class SessionsPanel {
             "button",
             {
               type: "button",
+              "data-start-main": "true",
               class:
                 "h-7 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground",
               onclick: () => this.startNew(),
