@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, existsSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -261,6 +261,27 @@ describe("host-fs real tools", () => {
     const fs = createHostFs(realExec);
     const entries = await fs.listDirDetailed(join(dir, "does-not-exist"));
     assert.deepEqual(entries, []);
+  });
+
+  it("isDir treats symlink-to-directory as dir", async () => {
+    const fs = createHostFs(realExec);
+    const target = join(dir, "real-dir");
+    const link = join(dir, "link-to-dir");
+    mkdirSync(target);
+    symlinkSync(target, link);
+    assert.equal(await fs.isDir(link), true, "symlink-to-dir should be a dir");
+    assert.equal(await fs.isDir(target), true, "real dir should be a dir");
+  });
+
+  it("listDirDetailed treats symlink-to-directory as kind=dir", async () => {
+    const fs = createHostFs(realExec);
+    const target = join(dir, "real-dir");
+    const link = "link-to-dir";
+    mkdirSync(target);
+    symlinkSync(target, join(dir, link));
+    const entries = await fs.listDirDetailed(dir);
+    const byName = Object.fromEntries(entries.map((e) => [e.name, e]));
+    assert.equal(byName[link]?.kind, "dir", "symlink-to-dir should report kind=dir");
   });
 
   it("sqliteQuery readonly", async () => {
