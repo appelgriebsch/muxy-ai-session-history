@@ -87,9 +87,16 @@ export async function listSessionsForCli(cli, cwd, opts = {}) {
         copilotHome: opts.copilotHome,
       }),
     );
-    return (rows || [])
+    // Non-element property from scanners (e.g. Copilot residual list without sqlite).
+    const softError =
+      rows && typeof rows === "object" && rows.softError
+        ? String(rows.softError)
+        : null;
+    const sessions = (rows || [])
       .map((item) => normalizeSession(item, cli))
       .filter(Boolean);
+    if (softError) sessions.softError = softError;
+    return sessions;
   } catch (err) {
     // Soft-fail message for sqlite-dependent CLIs
     if (
@@ -138,9 +145,15 @@ export function listSessionsForCliSync(cli, cwd, execOrOpts = muxy.exec) {
       "listSessionsForCliSync: exec returned Promises; use listSessionsForCli",
     );
   }
-  return (rows || [])
+  const softError =
+    rows && typeof rows === "object" && rows.softError
+      ? String(rows.softError)
+      : null;
+  const sessions = (rows || [])
     .map((item) => normalizeSession(item, cli))
     .filter(Boolean);
+  if (softError) sessions.softError = softError;
+  return sessions;
 }
 
 // re-export chain for tests

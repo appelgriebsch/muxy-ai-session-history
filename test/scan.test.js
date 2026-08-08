@@ -19,7 +19,9 @@ import { listCodex } from "../src/lib/sessions/scan/codex.js";
 import {
   listCopilot,
   buildCopilotProbeEntries,
+  COPILOT_SQLITE_SOFT_ERROR,
 } from "../src/lib/sessions/scan/copilot.js";
+import { listSessionsForCli } from "../src/lib/sessions/scan.js";
 import {
   pathQuote,
   md5Hex,
@@ -829,5 +831,53 @@ describe("listCopilot", () => {
       rows.every((r) => r.cwd === PROJ),
       true,
     );
+    assert.equal(rows.softError, COPILOT_SQLITE_SOFT_ERROR);
+  });
+
+  it("sqliteAvailable false: soft error set; events kept; turns-only omitted", async () => {
+    const eventsSid = uuidAt(10);
+    const turnsOnly = uuidAt(11);
+    sessionDir(eventsSid, {
+      cwd: PROJ,
+      events: '{"type":"user.message","data":{"content":"events-backed"}}\n',
+    });
+    // Turns-only: workspace + dir only — resume evidence lives in sqlite turns.
+    sessionDir(turnsOnly, { cwd: PROJ });
+    writeStore({
+      sessions: [
+        [eventsSid, PROJ, "Events"],
+        [turnsOnly, PROJ, "Turns only"],
+      ],
+      turns: [turnsOnly],
+    });
+
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome: home,
+      sqliteAvailable: false,
+    });
+    assert.ok(ids(rows).has(eventsSid), "events-backed session still listed");
+    assert.equal(ids(rows).has(turnsOnly), false, "turns-only omitted without sqlite");
+    assert.equal(rows.softError, COPILOT_SQLITE_SOFT_ERROR);
+
+    // Façade preserves softError for listAll / panel muted status line.
+    const viaCli = await listSessionsForCli("copilot", PROJ, {
+      fs,
+      sqliteAvailable: false,
+      copilotHome: home,
+    });
+    assert.ok(ids(viaCli).has(eventsSid));
+    assert.equal(viaCli.softError, COPILOT_SQLITE_SOFT_ERROR);
+  });
+
+  it("sqliteAvailable false: no soft error when session-state is empty", async () => {
+    mkdirSync(join(home, "session-state"), { recursive: true });
+    const fs = createHostFs(realExec);
+    const rows = await listCopilot(fs, PROJ, {
+      copilotHome: home,
+      sqliteAvailable: false,
+    });
+    assert.equal(rows.length, 0);
+    assert.equal(rows.softError, undefined);
   });
 });

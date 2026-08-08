@@ -81,6 +81,10 @@ export async function listAll(cwd, opts = {}) {
       sessionsByCli[provider.id] = UNCAPPED_PROVIDERS.has(provider.id)
         ? sessions
         : sessions.slice(0, PER_PROVIDER_CAP);
+      // Soft partial success (e.g. Copilot without sqlite): keep list + muted error.
+      if (sessions?.softError) {
+        errorsByCli[provider.id] = String(sessions.softError);
+      }
     } else {
       sessionsByCli[provider.id] = [];
       errorsByCli[provider.id] =
