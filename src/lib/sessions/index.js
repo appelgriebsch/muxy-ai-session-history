@@ -17,13 +17,22 @@ const UNCAPPED_PROVIDERS = new Set(["copilot"]);
 
 /**
  * Load all sessions for installed CLIs at cwd.
+ * Soft partial failures (e.g. Copilot without sqlite) populate `errorsByCli`
+ * while still keeping residual sessions in `sessionsByCli` / groups.
+ *
  * @param {string} cwd
- * @param {{ exec?: Function, fs?: object, home?: string, sqliteAvailable?: boolean }} [opts]
+ * @param {{
+ *   exec?: Function,
+ *   fs?: object,
+ *   home?: string,
+ *   sqliteAvailable?: boolean,
+ *   installed?: Array<{ id: string, displayName: string, binary?: string, path?: string }>,
+ * }} [opts]
  * @returns {Promise<{ installed, groups, sessionsByCli, errorsByCli, hostToolsMissing?: boolean }>}
  */
 export async function listAll(cwd, opts = {}) {
   const exec = opts.exec ?? ((argv, options) => muxy.exec(argv, options));
-  const installed = await detectInstalled();
+  const installed = opts.installed ?? (await detectInstalled());
   const sessionsByCli = {};
   const errorsByCli = {};
 

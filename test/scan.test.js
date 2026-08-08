@@ -22,6 +22,7 @@ import {
   COPILOT_SQLITE_SOFT_ERROR,
 } from "../src/lib/sessions/scan/copilot.js";
 import { listSessionsForCli } from "../src/lib/sessions/scan.js";
+import { listAll } from "../src/lib/sessions/index.js";
 import {
   pathQuote,
   md5Hex,
@@ -879,5 +880,37 @@ describe("listCopilot", () => {
     });
     assert.equal(rows.length, 0);
     assert.equal(rows.softError, undefined);
+  });
+
+  it("listAll: soft error in errorsByCli while events sessions remain", async () => {
+    const eventsSid = uuidAt(20);
+    sessionDir(eventsSid, {
+      cwd: PROJ,
+      events: '{"type":"user.message","data":{"content":"listed"}}\n',
+    });
+    const fs = createHostFs(realExec);
+    const { sessionsByCli, errorsByCli, groups } = await listAll(PROJ, {
+      exec: realExec,
+      fs,
+      home,
+      sqliteAvailable: false,
+      installed: [
+        {
+          id: "copilot",
+          displayName: "Copilot",
+          binary: "copilot",
+          path: "/usr/bin/copilot",
+        },
+      ],
+    });
+    assert.equal(errorsByCli.copilot, COPILOT_SQLITE_SOFT_ERROR);
+    assert.ok(
+      (sessionsByCli.copilot || []).some((s) => s.id === eventsSid),
+      "events-backed session kept in sessionsByCli",
+    );
+    const group = groups.find((g) => g.cli === "copilot");
+    assert.ok(group, "copilot group present");
+    assert.equal(group.error, COPILOT_SQLITE_SOFT_ERROR);
+    assert.ok(group.sessions.some((s) => s.id === eventsSid));
   });
 });

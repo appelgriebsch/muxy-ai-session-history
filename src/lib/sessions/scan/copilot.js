@@ -531,9 +531,15 @@ function probeCopilotStateDir(fs, state, entry, cwd, turnIds, store) {
  * mtime top-N as the sole gate before cwd match.
  *
  * Returns plain array when fs is sync; Promise when exec is async.
+ *
+ * When `sqliteAvailable === false` and session-state dirs exist, the array may
+ * carry a non-index property `softError` ({@link COPILOT_SQLITE_SOFT_ERROR}).
+ * Callers must read it before `map`/`filter`/`slice` (those drop non-element props).
+ *
  * @param {*} fs
  * @param {string} cwd
  * @param {{ home?: string, copilotHome?: string | null, sqliteAvailable?: boolean }} [opts]
+ * @returns {Array | Promise<Array>} session rows; optional `softError` string property
  */
 export function listCopilot(fs, cwd, opts = {}) {
   return chain(resolveCopilotHome(fs, opts), (home) => {
