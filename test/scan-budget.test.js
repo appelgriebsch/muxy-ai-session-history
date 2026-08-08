@@ -6,11 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostFs } from "../src/lib/host-fs.js";
 import { listGrok } from "../src/lib/sessions/scan/grok.js";
+import { listCursor } from "../src/lib/sessions/scan/cursor.js";
 import { listClaude } from "../src/lib/sessions/scan/claude.js";
 import { listCodex } from "../src/lib/sessions/scan/codex.js";
 import { listCopilot } from "../src/lib/sessions/scan/copilot.js";
 import {
   pathQuote,
+  md5Hex,
   slugify,
   PER_GROUP_CAP,
   ENRICH_SLACK,
@@ -92,6 +94,42 @@ describe("scan exec budgets (amplification)", () => {
     );
   });
 
+  it("listCursor N=40 stays under budget and returns PER_GROUP_CAP", async () => {
+    const hash = md5Hex(PROJ);
+    const root = join(home, ".cursor", "chats", hash);
+    for (let i = 0; i < N; i++) {
+      const sid = uuidAt(i);
+      const sess = join(root, sid);
+      mkdirSync(sess, { recursive: true });
+      writeFileSync(
+        join(sess, "meta.json"),
+        JSON.stringify({
+          title: `Cursor ${i}`,
+          branch: "main",
+          updatedAtMs: Date.UTC(2026, 0, 1, 0, 0, i),
+        }),
+      );
+      const t = new Date(2026, 0, 1, 0, 0, i);
+      utimesSync(sess, t, t);
+    }
+
+    const exec = countingExec(realExec);
+    const fs = createHostFs(exec);
+    const rows = await listCursor(fs, PROJ, { home });
+    assert.equal(rows.length, PER_GROUP_CAP);
+    const catCalls = exec.countWhere((a) => a[0] === "/bin/cat");
+    const headCalls = exec.countWhere((a) => a[0] === "/usr/bin/head");
+    assert.equal(catCalls, 0, "title metadata must use readHead, not full cat");
+    assert.ok(
+      headCalls <= PER_GROUP_CAP + ENRICH_SLACK,
+      `expected ≤${PER_GROUP_CAP + ENRICH_SLACK} head calls, got ${headCalls}`,
+    );
+    assert.ok(
+      exec.calls.length <= 50,
+      `expected ≤50 execs, got ${exec.calls.length}`,
+    );
+  });
+
   it("listClaude with many foreign jsonl only enriches capped set", async () => {
     const base = join(home, ".claude");
     const projects = join(base, "projects");
@@ -136,8 +174,8 @@ describe("scan exec budgets (amplification)", () => {
     const headCalls = exec.countWhere((a) => a[0] === "/usr/bin/head");
     // Only cap+slack heads, not N*2 projects
     assert.ok(
-      headCalls <= PER_GROUP_CAP + 15,
-      `expected ≤${PER_GROUP_CAP + 15} head calls, got ${headCalls}`,
+      headCalls <= PER_GROUP_CAP + ENRICH_SLACK,
+      `expected ≤${PER_GROUP_CAP + ENRICH_SLACK} head calls, got ${headCalls}`,
     );
     // Name-match from listDirDetailed — no per-file isFile/isDir probes.
     const ldProbes = exec.countWhere(
@@ -183,8 +221,8 @@ describe("scan exec budgets (amplification)", () => {
     assert.equal(rows.length, PER_GROUP_CAP);
     const headCalls = exec.countWhere((a) => a[0] === "/usr/bin/head");
     assert.ok(
-      headCalls <= PER_GROUP_CAP + 15,
-      `expected capped head calls, got ${headCalls}`,
+      headCalls <= PER_GROUP_CAP + ENRICH_SLACK,
+      `expected ≤${PER_GROUP_CAP + ENRICH_SLACK} head calls, got ${headCalls}`,
     );
     // Walk uses listDirDetailed kinds; no per-rollout isFile after name-match.
     // isDir(sessions root) is one ls -ldL; anything more is amplification.
