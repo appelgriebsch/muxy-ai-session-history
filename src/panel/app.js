@@ -150,11 +150,8 @@ export class SessionsPanel {
     this.closeStartMenu();
     this._pendingFocus = "start-chevron";
     this.render();
-    try {
-      await Promise.all([setPreferredCli(id), setListFilter("all")]);
-    } catch {
-      // Keep in-memory preferred/filter; storage may catch up on next write.
-    }
+    // Writes return false on failure (do not throw). Memory-first UX stands either way.
+    await Promise.all([setPreferredCli(id), setListFilter("all")]);
   }
 
   start() {
