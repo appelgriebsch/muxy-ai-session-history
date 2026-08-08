@@ -10,7 +10,12 @@ import {
 } from "@/lib/storage";
 import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
 import { filterGroups, listAll } from "@/lib/sessions/index";
-import { buildStartActionModel, pickStartCli } from "@/lib/sessions/start-cli";
+import {
+  buildStartActionModel,
+  isFilterStartOverride,
+  pickStartCli,
+  resolveStartPreference,
+} from "@/lib/sessions/start-cli";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
 import { deleteSession, renameSession } from "@/lib/sessions/manage";
@@ -138,17 +143,18 @@ export class SessionsPanel {
       this.render();
       return;
     }
-    if (id !== this.preferredCli) {
-      this.preferredCli = id;
-      try {
-        await setPreferredCli(id);
-      } catch {
-        // Keep in-memory preferred; storage may catch up on next write.
-      }
-    }
+    // Menu pick always becomes preferred and resets filter to All so
+    // preferred ≡ effective Start target (even if preferred id is unchanged).
+    this.preferredCli = id;
+    this.filter = "all";
     this.closeStartMenu();
     this._pendingFocus = "start-chevron";
     this.render();
+    try {
+      await Promise.all([setPreferredCli(id), setListFilter("all")]);
+    } catch {
+      // Keep in-memory preferred/filter; storage may catch up on next write.
+    }
   }
 
   start() {
@@ -329,12 +335,21 @@ export class SessionsPanel {
       this.closeStartMenu();
       this.render();
     }
-    const cli = pickStartCli(this.preferredCli, this.installed);
+    const resolved = resolveStartPreference(
+      this.preferredCli,
+      this.filter,
+      this.installed,
+    );
+    const cli = pickStartCli(resolved, this.installed);
     if (!cli) return;
     try {
       await openStartTerminal(cli);
       // Heal stored preference when pick fell back (e.g. preferred CLI uninstalled).
-      if (cli !== this.preferredCli) {
+      // Filter-driven Start must not write preferredCli.
+      if (
+        !isFilterStartOverride(this.filter, this.installed) &&
+        cli !== this.preferredCli
+      ) {
         this.preferredCli = cli;
         await setPreferredCli(cli);
         this.render();
@@ -1001,7 +1016,11 @@ export class SessionsPanel {
 
   footer() {
     const canStart = this.installed.length > 0;
-    const model = buildStartActionModel(this.preferredCli, this.installed);
+    const model = buildStartActionModel(
+      this.preferredCli,
+      this.installed,
+      this.filter,
+    );
 
     if (!canStart || !model.showMenu) {
       return h(
@@ -1143,7 +1162,11 @@ export class SessionsPanel {
   }
 
   emptyState(message, showStart = false) {
-    const model = buildStartActionModel(this.preferredCli, this.installed);
+    const model = buildStartActionModel(
+      this.preferredCli,
+      this.installed,
+      this.filter,
+    );
     return h(
       "div",
       {
