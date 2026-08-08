@@ -165,6 +165,43 @@ describe("listGrok", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].title, "Sync Path");
   });
+
+  it("caps huge summary.json via readHead (no full cat)", async () => {
+    const root = join(home, ".grok", "sessions", pathQuote(PROJ));
+    const sess = join(root, SID);
+    mkdirSync(sess, { recursive: true });
+    // Title fields first; padding forces file well past the 64 KiB head cap.
+    const summary = JSON.stringify({
+      generated_title: "Huge Grok",
+      updated_at: "2026-08-06T12:00:00Z",
+      info: { id: SID },
+      padding: "x".repeat(100_000),
+    });
+    assert.ok(summary.length > 64_000);
+    writeFileSync(join(sess, "summary.json"), summary);
+
+    const calls = [];
+    const exec = (argv, opts = {}) => {
+      calls.push(argv.slice());
+      return realExec(argv, opts);
+    };
+    const fs = createHostFs(exec);
+    const rows = await listGrok(fs, PROJ, { home });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    // Truncated head is invalid JSON → fallback title is fine; session must appear.
+    assert.ok(rows[0].title);
+
+    const catCalls = calls.filter((a) => a[0] === "/bin/cat");
+    const headCalls = calls.filter((a) => a[0] === "/usr/bin/head");
+    assert.equal(catCalls.length, 0, "must not full-cat summary.json");
+    assert.ok(headCalls.length >= 1, "expected readHead for summary");
+    // head -c 64000 (or similar)
+    assert.ok(
+      headCalls.some((a) => a.includes("-c") && a.some((x) => Number(x) <= 64_000)),
+      `expected head -c ≤64000, got ${JSON.stringify(headCalls)}`,
+    );
+  });
 });
 
 describe("listCursor", () => {
@@ -193,6 +230,36 @@ describe("listCursor", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].title, "Cursor Title");
     assert.equal(rows[0].branch, "main");
+  });
+
+  it("caps huge meta.json via readHead (no full cat)", async () => {
+    const hash = createHash("md5").update(PROJ, "utf8").digest("hex");
+    const sess = join(home, ".cursor", "chats", hash, SID);
+    mkdirSync(sess, { recursive: true });
+    const meta = JSON.stringify({
+      title: "Huge Cursor",
+      branch: "main",
+      updatedAtMs: 1_700_000_000_000,
+      padding: "y".repeat(100_000),
+    });
+    assert.ok(meta.length > 64_000);
+    writeFileSync(join(sess, "meta.json"), meta);
+
+    const calls = [];
+    const exec = (argv, opts = {}) => {
+      calls.push(argv.slice());
+      return realExec(argv, opts);
+    };
+    const fs = createHostFs(exec);
+    const rows = await listCursor(fs, PROJ, { home });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    assert.ok(rows[0].title);
+
+    const catCalls = calls.filter((a) => a[0] === "/bin/cat");
+    const headCalls = calls.filter((a) => a[0] === "/usr/bin/head");
+    assert.equal(catCalls.length, 0, "must not full-cat meta.json");
+    assert.ok(headCalls.length >= 1, "expected readHead for meta");
   });
 });
 
