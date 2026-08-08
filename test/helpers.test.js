@@ -17,6 +17,7 @@ import {
   isFilterStartOverride,
   pickStartCli,
   resolveStartPreference,
+  shouldHealPreferredAfterStart,
   showStartCliMenu,
   startButtonLabel,
   startMenuItems,
@@ -338,5 +339,32 @@ describe("start-cli helpers", () => {
     assert.equal(model.startCli, "grok");
     assert.equal(model.label, "Start new Grok");
     assert.equal(model.items.find((i) => i.id === "grok")?.selected, true);
+  });
+
+  it("shouldHealPreferredAfterStart gates filter override and no-ops on match", () => {
+    // Filter override + mismatch → never heal (filter Start must not persist).
+    assert.equal(
+      shouldHealPreferredAfterStart("claude", "grok", "claude", multi),
+      false,
+    );
+    // No override + mismatch (ghost preferred fallback) → heal.
+    assert.equal(
+      shouldHealPreferredAfterStart("grok", "missing", "all", multi),
+      true,
+    );
+    // Match → no-op.
+    assert.equal(
+      shouldHealPreferredAfterStart("grok", "grok", "all", multi),
+      false,
+    );
+    // Uninstalled filter is not an override → heal allowed when mismatch.
+    assert.equal(
+      shouldHealPreferredAfterStart("grok", "missing", "cursor", multi),
+      true,
+    );
+    assert.equal(
+      shouldHealPreferredAfterStart(null, "grok", "all", multi),
+      false,
+    );
   });
 });

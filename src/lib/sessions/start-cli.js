@@ -25,23 +25,6 @@ export function pickStartCli(preferredCli, installed) {
 }
 
 /**
- * Temporary Start preference from an active provider filter chip.
- * When the filter is a specific installed agent, Start targets that agent
- * without treating it as stored preferredCli.
- * @param {string | null | undefined} preferredCli
- * @param {string | null | undefined} listFilter
- * @param {{ id: string }[]} installed
- * @returns {string | null | undefined}
- */
-export function resolveStartPreference(preferredCli, listFilter, installed) {
-  if (listFilter && listFilter !== "all") {
-    const list = asInstalledList(installed);
-    if (list.some((p) => p.id === listFilter)) return listFilter;
-  }
-  return preferredCli;
-}
-
-/**
  * True when Start should follow the filter chip (installed provider filter ≠ all).
  * Used to gate preferredCli heal writes so filter-driven Start never persists.
  * @param {string | null | undefined} listFilter
@@ -51,6 +34,38 @@ export function resolveStartPreference(preferredCli, listFilter, installed) {
 export function isFilterStartOverride(listFilter, installed) {
   if (!listFilter || listFilter === "all") return false;
   return asInstalledList(installed).some((p) => p.id === listFilter);
+}
+
+/**
+ * Temporary Start preference from an active provider filter chip.
+ * When the filter is a specific installed agent, Start targets that agent
+ * without treating it as stored preferredCli.
+ * @param {string | null | undefined} preferredCli
+ * @param {string | null | undefined} listFilter
+ * @param {{ id: string }[]} installed
+ * @returns {string | null | undefined}
+ */
+export function resolveStartPreference(preferredCli, listFilter, installed) {
+  return isFilterStartOverride(listFilter, installed) ? listFilter : preferredCli;
+}
+
+/**
+ * Whether startNew should heal stored preferredCli after a successful start.
+ * Callers must pass the filter/preferred snapshot from before openStartTerminal.
+ * @param {string | null} cli - CLI that was actually started
+ * @param {string | null | undefined} preferredCli - preferred at start time
+ * @param {string | null | undefined} listFilter - filter at start time
+ * @param {{ id: string }[]} installed
+ * @returns {boolean}
+ */
+export function shouldHealPreferredAfterStart(
+  cli,
+  preferredCli,
+  listFilter,
+  installed,
+) {
+  if (cli == null || cli === preferredCli) return false;
+  return !isFilterStartOverride(listFilter, installed);
 }
 
 /**

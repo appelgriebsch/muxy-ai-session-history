@@ -12,9 +12,9 @@ import { openResumeTerminal, openStartTerminal } from "@/lib/resume";
 import { filterGroups, listAll } from "@/lib/sessions/index";
 import {
   buildStartActionModel,
-  isFilterStartOverride,
   pickStartCli,
   resolveStartPreference,
+  shouldHealPreferredAfterStart,
 } from "@/lib/sessions/start-cli";
 import { dateGroup, relativeTime } from "@/lib/time";
 import { groupByDate } from "@/lib/sessions/group";
@@ -335,20 +335,30 @@ export class SessionsPanel {
       this.closeStartMenu();
       this.render();
     }
+    // Snapshot before await so concurrent filter/menu changes cannot mis-heal.
+    const preferredAtStart = this.preferredCli;
+    const filterAtStart = this.filter;
+    const installed = this.installed;
     const resolved = resolveStartPreference(
-      this.preferredCli,
-      this.filter,
-      this.installed,
+      preferredAtStart,
+      filterAtStart,
+      installed,
     );
-    const cli = pickStartCli(resolved, this.installed);
+    const cli = pickStartCli(resolved, installed);
     if (!cli) return;
     try {
       await openStartTerminal(cli);
       // Heal stored preference when pick fell back (e.g. preferred CLI uninstalled).
-      // Filter-driven Start must not write preferredCli.
+      // Filter-driven Start must not write preferredCli. Only heal if preferred
+      // was not updated while the terminal opened (e.g. concurrent menu pick).
       if (
-        !isFilterStartOverride(this.filter, this.installed) &&
-        cli !== this.preferredCli
+        shouldHealPreferredAfterStart(
+          cli,
+          preferredAtStart,
+          filterAtStart,
+          installed,
+        ) &&
+        this.preferredCli === preferredAtStart
       ) {
         this.preferredCli = cli;
         await setPreferredCli(cli);
@@ -589,17 +599,26 @@ export class SessionsPanel {
         return;
       }
       // Deleted row gone: fall back to Start chevron or first filter chip.
-      scope.querySelector("button[data-start-chevron]")?.focus() ||
-        scope.querySelector("button[aria-pressed]")?.focus();
+      // focus() returns undefined — never chain with || or the fallback always runs.
+      const chevron = scope.querySelector("button[data-start-chevron]");
+      if (chevron) {
+        chevron.focus();
+        return;
+      }
+      scope.querySelector("button[aria-pressed]")?.focus();
       return;
     }
     if (intent === "start-chevron") {
-      scope.querySelector("button[data-start-chevron]")?.focus() ||
-        scope
-          .querySelector(
-            "button.h-7.rounded-md.bg-primary, button[data-start-main]",
-          )
-          ?.focus();
+      const chevron = scope.querySelector("button[data-start-chevron]");
+      if (chevron) {
+        chevron.focus();
+        return;
+      }
+      scope
+        .querySelector(
+          "button[data-start-main], button.h-7.rounded-md.bg-primary",
+        )
+        ?.focus();
       return;
     }
     if (intent === "start-menu-item") {
@@ -1030,6 +1049,7 @@ export class SessionsPanel {
           "button",
           {
             type: "button",
+            "data-start-main": "true",
             disabled: !canStart,
             class:
               "flex h-7 w-full items-center justify-center gap-1.5 rounded-md border border-border bg-surface text-[12px] text-foreground outline-none hover:bg-accent disabled:opacity-50",
@@ -1058,6 +1078,7 @@ export class SessionsPanel {
           "button",
           {
             type: "button",
+            "data-start-main": "true",
             class:
               "flex h-7 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-l-md border border-border border-r-0 bg-surface text-[12px] text-foreground outline-none hover:bg-accent focus-visible:ring-1 focus-visible:ring-primary",
             onclick: () => this.startNew(),
