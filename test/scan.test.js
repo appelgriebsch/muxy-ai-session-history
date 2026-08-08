@@ -49,6 +49,21 @@ function realExec(argv, opts = {}) {
   };
 }
 
+/** Assert metadata was read only via head -c (no full cat). */
+function assertReadHeadOnly(calls, { maxBytes = 64_000 } = {}) {
+  const catCalls = calls.filter((a) => a[0] === "/bin/cat");
+  const headCalls = calls.filter((a) => a[0] === "/usr/bin/head");
+  assert.equal(catCalls.length, 0, "must not full-cat metadata");
+  assert.ok(headCalls.length >= 1, "expected readHead for metadata");
+  assert.ok(
+    headCalls.some((a) => {
+      const i = a.indexOf("-c");
+      return i >= 0 && Number(a[i + 1]) === maxBytes;
+    }),
+    `expected head -c ${maxBytes}, got ${JSON.stringify(headCalls)}`,
+  );
+}
+
 describe("scan helpers", () => {
   it("pathQuote matches percent-encoding for path separators", () => {
     assert.equal(pathQuote("/Users/a/b"), "%2FUsers%2Fa%2Fb");
@@ -165,6 +180,66 @@ describe("listGrok", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].title, "Sync Path");
   });
+
+  it("caps huge summary.json via readHead (no full cat)", async () => {
+    const root = join(home, ".grok", "sessions", pathQuote(PROJ));
+    const sess = join(root, SID);
+    mkdirSync(sess, { recursive: true });
+    // Title fields first; padding forces file well past the 64 KiB head cap.
+    const summary = JSON.stringify({
+      generated_title: "Huge Grok",
+      updated_at: "2026-08-06T12:00:00Z",
+      info: { id: SID },
+      padding: "x".repeat(100_000),
+    });
+    assert.ok(summary.length > 64_000);
+    writeFileSync(join(sess, "summary.json"), summary);
+
+    const calls = [];
+    const exec = (argv, opts = {}) => {
+      calls.push(argv.slice());
+      return realExec(argv, opts);
+    };
+    const fs = createHostFs(exec);
+    const rows = await listGrok(fs, PROJ, { home });
+    assert.equal(rows.length, 1);
+    // Truncated head is invalid JSON → fail-open with dir name + fallback title.
+    assert.equal(rows[0].id, SID);
+    assert.equal(rows[0].title, "(untitled)");
+    assertReadHeadOnly(calls, { maxBytes: 64_000 });
+  });
+
+  it("still parses large-but-capped summary.json under the head limit", async () => {
+    const root = join(home, ".grok", "sessions", pathQuote(PROJ));
+    const sess = join(root, SID);
+    mkdirSync(sess, { recursive: true });
+    // Pad until near the cap but keep full JSON ≤ 64_000 so parse succeeds.
+    let pad = 50_000;
+    let summary = "";
+    for (; pad >= 0; pad -= 500) {
+      summary = JSON.stringify({
+        generated_title: "Still Parses",
+        updated_at: "2026-08-06T12:00:00Z",
+        info: { id: SID },
+        padding: "x".repeat(pad),
+      });
+      if (summary.length <= 64_000) break;
+    }
+    assert.ok(summary.length > 8_000 && summary.length <= 64_000);
+    writeFileSync(join(sess, "summary.json"), summary);
+
+    const calls = [];
+    const exec = (argv, opts = {}) => {
+      calls.push(argv.slice());
+      return realExec(argv, opts);
+    };
+    const fs = createHostFs(exec);
+    const rows = await listGrok(fs, PROJ, { home });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    assert.equal(rows[0].title, "Still Parses");
+    assertReadHeadOnly(calls, { maxBytes: 64_000 });
+  });
 });
 
 describe("listCursor", () => {
@@ -193,6 +268,66 @@ describe("listCursor", () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].title, "Cursor Title");
     assert.equal(rows[0].branch, "main");
+  });
+
+  it("caps huge meta.json via readHead (no full cat)", async () => {
+    const hash = createHash("md5").update(PROJ, "utf8").digest("hex");
+    const sess = join(home, ".cursor", "chats", hash, SID);
+    mkdirSync(sess, { recursive: true });
+    const meta = JSON.stringify({
+      title: "Huge Cursor",
+      branch: "main",
+      updatedAtMs: 1_700_000_000_000,
+      padding: "y".repeat(100_000),
+    });
+    assert.ok(meta.length > 64_000);
+    writeFileSync(join(sess, "meta.json"), meta);
+
+    const calls = [];
+    const exec = (argv, opts = {}) => {
+      calls.push(argv.slice());
+      return realExec(argv, opts);
+    };
+    const fs = createHostFs(exec);
+    const rows = await listCursor(fs, PROJ, { home });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    // Truncated head is invalid JSON → fail-open without branch from meta.
+    assert.equal(rows[0].title, "(untitled)");
+    assert.equal(rows[0].branch, null);
+    assertReadHeadOnly(calls, { maxBytes: 64_000 });
+  });
+
+  it("still parses large-but-capped meta.json under the head limit", async () => {
+    const hash = createHash("md5").update(PROJ, "utf8").digest("hex");
+    const sess = join(home, ".cursor", "chats", hash, SID);
+    mkdirSync(sess, { recursive: true });
+    let pad = 50_000;
+    let meta = "";
+    for (; pad >= 0; pad -= 500) {
+      meta = JSON.stringify({
+        title: "Still Parses",
+        branch: "main",
+        updatedAtMs: 1_700_000_000_000,
+        padding: "y".repeat(pad),
+      });
+      if (meta.length <= 64_000) break;
+    }
+    assert.ok(meta.length > 8_000 && meta.length <= 64_000);
+    writeFileSync(join(sess, "meta.json"), meta);
+
+    const calls = [];
+    const exec = (argv, opts = {}) => {
+      calls.push(argv.slice());
+      return realExec(argv, opts);
+    };
+    const fs = createHostFs(exec);
+    const rows = await listCursor(fs, PROJ, { home });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    assert.equal(rows[0].title, "Still Parses");
+    assert.equal(rows[0].branch, "main");
+    assertReadHeadOnly(calls, { maxBytes: 64_000 });
   });
 });
 
