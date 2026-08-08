@@ -96,14 +96,10 @@
     "marketplace": {
       "author": "Appelgriebsch",
       "github": "appelgriebsch",
-      "categories": [
-        "productivity",
-        "ai"
-      ],
-      "icon": "assets/icon.svg",
-      "screenshots": [
-        "assets/screenshot-1.png"
-      ]
+      "repository": "https://github.com/muxy-app/extensions",
+      "categories": ["productivity", "ai"],
+      "icon": "icon.svg",
+      "screenshots": ["screenshot-1.png"]
     }
   }
 }
