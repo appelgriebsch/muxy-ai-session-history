@@ -51,9 +51,8 @@ function writeCursorStore(dbPath, meta, blobs = []) {
     `INSERT INTO meta VALUES ('0', ${sqlQuote(hex)});`,
   ];
   for (const b of blobs) {
-    stmts.push(
-      `INSERT INTO blobs VALUES (${sqlQuote(b.id)}, ${sqlQuote(b.data)});`,
-    );
+    const blobHex = Buffer.from(String(b.data), "utf8").toString("hex");
+    stmts.push(`INSERT INTO blobs VALUES (${sqlQuote(b.id)}, X'${blobHex}');`);
   }
   const result = spawnSync("/usr/bin/sqlite3", [dbPath, stmts.join("\n")], {
     encoding: "utf8",
@@ -316,11 +315,8 @@ describe("listCursor", () => {
     };
     const fs = createHostFs(exec);
     const rows = await listCursor(fs, PROJ, { home });
-    assert.equal(rows.length, 1);
-    assert.equal(rows[0].id, SID);
-    // Truncated head is invalid JSON → last-resort Cursor · shortId (not (untitled)).
-    assert.equal(rows[0].title, "Cursor · aaaaaaaa…aaaa");
-    assert.equal(rows[0].branch, null);
+    // Truncated sidecar + no store meta → unconfirmable; do not list as last-resort clutter.
+    assert.equal(rows.length, 0);
     assertReadHeadOnly(calls, { maxBytes: 64_000 });
   });
 
@@ -499,6 +495,31 @@ describe("listCursor", () => {
       calls.filter((a) => a[0] === "/usr/bin/sqlite3").length,
       0,
     );
+  });
+
+  it("omits dirs with no sidecar and no store meta", async () => {
+    const hash = createHash("md5").update(PROJ, "utf8").digest("hex");
+    const sess = join(home, ".cursor", "chats", hash, SID);
+    mkdirSync(sess, { recursive: true });
+    const fs = createHostFs(realExec);
+    const rows = await listCursor(fs, PROJ, { home, sqliteAvailable: true });
+    assert.equal(rows.length, 0);
+  });
+
+  it("last-resort Cursor · shortId when store name is weak and blobs do not title", async () => {
+    const hash = createHash("md5").update(PROJ, "utf8").digest("hex");
+    const sess = join(home, ".cursor", "chats", hash, SID);
+    mkdirSync(sess, { recursive: true });
+    writeCursorStore(join(sess, "store.db"), {
+      name: "New Agent",
+      latestRootBlobId: "ab".repeat(32),
+      createdAt: 1_700_000_000_000,
+    });
+    const fs = createHostFs(realExec);
+    const rows = await listCursor(fs, PROJ, { home, sqliteAvailable: true });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, SID);
+    assert.equal(rows[0].title, "Cursor · aaaaaaaa…aaaa");
   });
 });
 

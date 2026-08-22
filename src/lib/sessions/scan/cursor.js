@@ -8,7 +8,7 @@ import {
   mapSeq,
   tryChain,
   takeRecent,
-  isWeakTitle,
+  isWeakCursorTitle,
   shortId,
   parseCursorStoreMeta,
   cursorTitleFromUserBlob,
@@ -21,7 +21,7 @@ export const CURSOR_SQLITE_SOFT_ERROR =
 
 const META_SQL = "SELECT value FROM meta WHERE key = '0' LIMIT 1";
 const BLOB_SQL =
-  "SELECT CAST(substr(data, 1, 16384) AS TEXT) AS text FROM blobs WHERE substr(CAST(data AS TEXT), 1, 1) = '{' LIMIT 40";
+  "SELECT CAST(substr(data, 1, 16384) AS TEXT) AS text FROM blobs WHERE substr(data, 1, 1) = x'7b' LIMIT 40";
 
 /** Max leftover weak parents per scan that read first-user blobs. */
 const BLOB_FALLBACK_CAP = 5;
@@ -40,7 +40,7 @@ function parseSidecar(text) {
 function firstStrongTitle(sid, ...cands) {
   for (const cand of cands) {
     if (cand == null) continue;
-    if (!isWeakTitle(cand, sid)) return String(cand);
+    if (!isWeakCursorTitle(cand, sid)) return String(cand);
   }
   return null;
 }
@@ -48,7 +48,7 @@ function firstStrongTitle(sid, ...cands) {
 function titleFromBlobRows(sid, rows) {
   for (const row of rows || []) {
     const t = cursorTitleFromUserBlob(row && row.text);
-    if (t && !isWeakTitle(t, sid)) return t;
+    if (t && !isWeakCursorTitle(t, sid)) return t;
   }
   return null;
 }
@@ -97,7 +97,8 @@ export function listCursor(fs, cwd, opts = {}) {
                 ? sidecar.title || sidecar.name || null
                 : null;
               const needStore =
-                sqliteAvailable && (!sidecar || isWeakTitle(sidecarTitle, name));
+                sqliteAvailable &&
+                (!sidecar || isWeakCursorTitle(sidecarTitle, name));
 
               const storeP = needStore
                 ? tryChain(() => fs.sqliteQuery(dbPath, META_SQL), null)
@@ -118,10 +119,8 @@ export function listCursor(fs, cwd, opts = {}) {
                   return null;
                 }
 
-                // sqlite missing: store-only dirs cannot be confirmed as parents.
-                if (!sidecar && !storeMeta) {
-                  if (!sqliteAvailable) return null;
-                }
+                // Hide dirs we cannot confirm as parent chats (no sidecar, no store meta).
+                if (!sidecar && !storeMeta) return null;
 
                 let title = firstStrongTitle(
                   name,

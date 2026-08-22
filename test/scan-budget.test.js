@@ -35,9 +35,8 @@ function writeCursorStore(dbPath, meta, blobs = []) {
     `INSERT INTO meta VALUES ('0', ${sqlQuote(hex)});`,
   ];
   for (const b of blobs) {
-    stmts.push(
-      `INSERT INTO blobs VALUES (${sqlQuote(b.id)}, ${sqlQuote(b.data)});`,
-    );
+    const blobHex = Buffer.from(String(b.data), "utf8").toString("hex");
+    stmts.push(`INSERT INTO blobs VALUES (${sqlQuote(b.id)}, X'${blobHex}');`);
   }
   const result = spawnSync("/usr/bin/sqlite3", [dbPath, stmts.join("\n")], {
     encoding: "utf8",

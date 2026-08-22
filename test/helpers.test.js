@@ -30,6 +30,7 @@ import {
   parseCursorStoreMeta,
   encodeCursorStoreMeta,
   isWeakTitle,
+  isWeakCursorTitle,
   cursorTitleFromUserBlob,
   isEmptyCursorRootBlob,
 } from "../src/lib/sessions/scan/helpers.js";
@@ -250,10 +251,12 @@ describe("cursor store hex helpers", () => {
     assert.equal(back.mode, "default");
   });
 
-  it("New Agent is a weak title", () => {
-    assert.equal(isWeakTitle("New Agent"), true);
-    assert.equal(isWeakTitle("new agent"), true);
-    assert.equal(isWeakTitle("JWT OAuth Refactor"), false);
+  it("New Agent is a Cursor-only weak title", () => {
+    assert.equal(isWeakTitle("New Agent"), false);
+    assert.equal(isWeakTitle("new agent"), false);
+    assert.equal(isWeakCursorTitle("New Agent"), true);
+    assert.equal(isWeakCursorTitle("new agent"), true);
+    assert.equal(isWeakCursorTitle("JWT OAuth Refactor"), false);
   });
 
   it("cursorTitleFromUserBlob extracts user_query and skips dump-only", () => {

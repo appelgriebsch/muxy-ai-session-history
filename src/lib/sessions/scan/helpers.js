@@ -50,7 +50,7 @@ export function takeRecent(entries, opts = {}) {
     .slice(0, Math.max(0, limit));
 }
 
-const WEAK_TITLES = new Set(["", "(untitled)", "untitled", "session", "new agent"]);
+const WEAK_TITLES = new Set(["", "(untitled)", "untitled", "session"]);
 
 
 /** Title-like column preference for Copilot (and similar) session stores. */
@@ -499,6 +499,13 @@ export function isWeakTitle(value, sid) {
   if (UUID_RE.test(text)) return true;
   if (/^[0-9a-fA-F]{16,}$/.test(text)) return true;
   return false;
+}
+
+/** Cursor default untitled (`iq()` treats `New Agent` as no title). Not in WEAK_TITLES — Copilot may use that name. */
+export function isWeakCursorTitle(value, sid) {
+  if (isWeakTitle(value, sid)) return true;
+  const text = String(value).replace(/\s+/g, " ").trim().toLowerCase();
+  return text === "new agent";
 }
 
 export function shortId(sid) {
