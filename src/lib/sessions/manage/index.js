@@ -168,20 +168,14 @@ async function renameCursor(fs, home, sessionId, newTitle) {
   const sessionDir = await findCursorSessionDir(fs, home, sessionId);
   if (!sessionDir) throw new Error(`Cursor session not found: ${sessionId}`);
   const storePath = joinPath(sessionDir, "store.db");
-  let storeError = null;
   if (await toPromise(fs.isFile(storePath))) {
     try {
       await renameCursorStoreName(fs, storePath, newTitle);
     } catch (e) {
-      storeError = e;
+      throw new Error(`Cursor store was not updated: ${e?.message || e}`);
     }
   }
   await upsertCursorSidecar(fs, sessionDir, newTitle);
-  if (storeError) {
-    throw new Error(
-      `Cursor store was not updated: ${storeError?.message || storeError}`,
-    );
-  }
 }
 
 async function renameCodex(fs, home, sessionId, newTitle) {

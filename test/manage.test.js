@@ -173,7 +173,7 @@ describe("manage rename/delete", () => {
       /store was not updated/i,
     );
     const sidecar = JSON.parse(readFileSync(join(session, "meta.json"), "utf8"));
-    assert.equal(sidecar.title, "Cursor New");
+    assert.equal(sidecar.title, "Old");
     assert.equal("blobEncryptionKey" in sidecar, false);
     const out = spawnSync("/usr/bin/sqlite3", [db, `SELECT value FROM meta WHERE key='0'`], {
       encoding: "utf8",
